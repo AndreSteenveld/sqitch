@@ -8,11 +8,13 @@ use Moo;
 use App::Sqitch::X qw(hurl);
 use Types::Standard qw(Str ArrayRef Maybe Bool);
 use Locale::TextDomain qw(App-Sqitch);
+use List::Util qw(first);
 use namespace::autoclean;
 
 extends 'App::Sqitch::Command';
+with 'App::Sqitch::Role::ContextCommand';
 
-our $VERSION = '0.9995';
+# VERSION
 
 has tag_name => (
     is  => 'ro',
@@ -57,7 +59,6 @@ sub execute {
         names      => [$self->tag_name, $self->change_name],
         all        => $self->all,
         args       => \@_,
-        no_default => 1,
         no_changes => 1,
     );
 
@@ -91,6 +92,17 @@ sub execute {
             ));
         }
     } else {
+        # Check for missing name.
+        if (@_) {
+            if (my $target = first { my $n = $_->name; first { $_ eq $n } @_ } @{ $targets }) {
+                # Name conflicts with a target.
+                hurl tag => __x(
+                    'Name "{name}" identifies a target; use "--tag {name}" to use it for the tag name',
+                    name => $target->name,
+                );
+            }
+        }
+
         # Show unique tags.
         my %seen;
         for my $target (@{ $targets }) {
@@ -171,7 +183,7 @@ David E. Wheeler <david@justatheory.com>
 
 =head1 License
 
-Copyright (c) 2012-2015 iovation Inc.
+Copyright (c) 2012-2020 iovation Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

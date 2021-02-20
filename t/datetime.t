@@ -11,10 +11,7 @@ use Test::Exception;
 use Encode;
 use lib 't/lib';
 use LC;
-
-$ENV{SQITCH_CONFIG}        = 'nonexistent.conf';
-$ENV{SQITCH_USER_CONFIG}   = 'nonexistent.user';
-$ENV{SQITCH_SYSTEM_CONFIG} = 'nonexistent.sys';
+use TestConfig;
 
 my $CLASS = 'App::Sqitch::DateTime';
 require_ok $CLASS;
@@ -35,7 +32,7 @@ is_deeply [$dt->as_string_formats], [qw(
 my $rfc = do {
     my $clone = $dt->clone;
     $clone->set_time_zone('local');
-    $clone->set( locale => 'en_US' );
+    $clone->set_locale('en_US');
     ( my $rv = $clone->strftime('%a, %d %b %Y %H:%M:%S %z') ) =~ s/\+0000$/-0000/;
     $rv;
 };
@@ -49,7 +46,7 @@ my $iso = do {
 my $ldt = do {
     my $clone = $dt->clone;
     $clone->set_time_zone('local');
-    $clone->set( locale => $LC::TIME );
+    $clone->set_locale($LC::TIME);
     $clone;
 };
 

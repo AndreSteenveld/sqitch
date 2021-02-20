@@ -15,7 +15,7 @@ use Type::Utils qw(enum);
 use namespace::autoclean;
 extends 'App::Sqitch::Command';
 
-our $VERSION = '0.9995';
+# VERSION
 
 has file => (
     is      => 'ro',
@@ -60,7 +60,7 @@ sub options {
     return qw(
         file|config-file|f=s
         local
-        user
+        user|global
         system
 
         int
@@ -642,7 +642,7 @@ David E. Wheeler <david@justatheory.com>
 
 =head1 License
 
-Copyright (c) 2012-2015 iovation Inc.
+Copyright (c) 2012-2020 iovation Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

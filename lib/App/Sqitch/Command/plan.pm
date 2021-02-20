@@ -14,7 +14,7 @@ use namespace::autoclean;
 use Try::Tiny;
 extends 'App::Sqitch::Command';
 
-our $VERSION = '0.9995';
+# VERSION
 
 my %FORMATS;
 $FORMATS{raw} = <<EOF;
@@ -65,6 +65,11 @@ EOF
 
 $FORMATS{oneline} = '%{:event}C%h %l%{reset}C %n%{cyan}C%t%{reset}C';
 
+has target => (
+    is      => 'ro',
+    isa     => Str,
+);
+
 has event => (
     is      => 'ro',
     isa     => Str,
@@ -96,6 +101,12 @@ has reverse => (
     default => 0,
 );
 
+has headers => (
+    is      => 'ro',
+    isa     => Bool,
+    default => 1,
+);
+
 has format => (
     is       => 'ro',
     isa      => Str,
@@ -112,6 +123,7 @@ has formatter => (
 sub options {
     return qw(
         event=s
+        target|t=s
         change-pattern|change=s
         planner-pattern|planner=s
         format|f=s
@@ -123,6 +135,7 @@ sub options {
         no-color
         abbrev=i
         oneline
+        headers!
     );
 }
 
@@ -174,8 +187,19 @@ sub configure {
 }
 
 sub execute {
-    my $self   = shift;
-    my $plan = $self->default_target->plan;
+    my $self = shift;
+    my ($targets) = $self->parse_args(
+        target => $self->target,
+        args   => \@_,
+    );
+
+    # Warn on multiple targets.
+    my $target = shift @{ $targets };
+    $self->warn(__x(
+        'Too many targets specified; using {target}',
+        target => $target->name,
+    )) if @{ $targets };
+    my $plan = $target->plan;
 
     # Exit with status 1 on no changes, probably not expected.
     hurl {
@@ -200,9 +224,11 @@ sub execute {
     # Send the results.
     my $formatter = $self->formatter;
     my $format    = $self->format;
-    $self->page( '# ', __x 'Project: {project}', project => $plan->project );
-    $self->page( '# ', __x 'File:    {file}', file => $plan->file );
-    $self->page('');
+    if ($self->headers) {
+        $self->page( '# ', __x 'Project: {project}', project => $plan->project );
+        $self->page( '# ', __x 'File:    {file}', file => $plan->file );
+        $self->page('');
+    }
     while ( my $change = $iter->() ) {
         $self->page( $formatter->format( $format, {
             event         => $change->is_deploy ? 'deploy' : 'revert',
@@ -269,6 +295,10 @@ Maximum number of entries to display.
 
 Reverse the usual order of the display of entries.
 
+=head3 C<headers>
+
+Output headers. Defaults to true.
+
 =head3 C<skip>
 
 Number of entries to skip before displaying entries.
@@ -301,7 +331,7 @@ David E. Wheeler <david@justatheory.com>
 
 =head1 License
 
-Copyright (c) 2012-2015 iovation Inc.
+Copyright (c) 2012-2020 iovation Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

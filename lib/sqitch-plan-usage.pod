@@ -4,12 +4,13 @@ sqitch-plan-usage - Sqitch plan usage statement
 
 =head1 Usage
 
-  sqitch [options] plan [plan options]
+  sqitch plan [options] [<database>]
 
 =head1 Options
 
 Search options:
 
+ -t --target <target>             database target specifying the plan
     --event                       type of event
     --change-pattern  --change    match regex against change names
     --planner-pattern --planner   match regex against committer names
@@ -26,3 +27,6 @@ Formatting
     --no-color                    never use ANSI colors
     --abbrev                      abbreviate change IDs
     --oneline                     shorthand for --format oneline --abbrev 6
+    --headers                     show headers for plan file and project
+    --no-headers                  don't show plan headers
+

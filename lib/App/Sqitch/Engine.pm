@@ -9,12 +9,12 @@ use Locale::TextDomain qw(App-Sqitch);
 use Path::Class qw(file);
 use App::Sqitch::X qw(hurl);
 use List::Util qw(first max);
-use URI::db 0.15;
+use URI::db 0.19;
 use App::Sqitch::Types qw(Str Int Sqitch Plan Bool HashRef URI Maybe Target);
 use namespace::autoclean;
 use constant registry_release => '1.1';
 
-our $VERSION = '0.9995';
+# VERSION
 
 has sqitch => (
     is       => 'ro',
@@ -30,13 +30,34 @@ has target => (
     weak_ref => 1,
     handles => {
         uri         => 'uri',
-        username    => 'username',
-        password    => 'password',
         client      => 'client',
         registry    => 'registry',
         destination => 'name',
     }
 );
+
+has username => (
+    is      => 'ro',
+    isa     => Maybe[Str],
+    lazy    => 1,
+    default => sub {
+        my $self = shift;
+        $self->target->username || $self->_def_user
+    },
+);
+
+has password => (
+    is      => 'ro',
+    isa     => Maybe[Str],
+    lazy    => 1,
+    default => sub {
+        my $self = shift;
+        $self->target->password || $self->_def_pass
+    },
+);
+
+sub _def_user { }
+sub _def_pass { }
 
 sub registry_destination { shift->destination }
 
@@ -109,7 +130,7 @@ sub load {
 
     # Load the engine class.
     my $ekey = $target->engine_key or hurl engine => __(
-        'No engine specified; use --engine or set core.engine'
+        'No engine specified; specify via target or core.engine'
     );
 
     my $pkg = __PACKAGE__ . '::' . $target->engine_key;
@@ -121,7 +142,7 @@ sub driver { shift->key }
 
 sub key {
     my $class = ref $_[0] || shift;
-    hurl engine => __ 'No engine specified; use --engine or set core.engine'
+    hurl engine => __ 'No engine specified; specify via target or core.engine'
         if $class eq __PACKAGE__;
     my $pkg = quotemeta __PACKAGE__;
     $class =~ s/^$pkg\:://;
@@ -244,7 +265,7 @@ sub revert {
             $self->change_for_key($to)
         ) or do {
             # Not deployed. Is it in the plan?
-            if ( $plan->get($to) ) {
+            if ( $plan->find($to) ) {
                 # Known but not deployed.
                 hurl revert => __x(
                     'Change not deployed: "{change}"',
@@ -260,13 +281,12 @@ sub revert {
 
         @changes = $self->deployed_changes_since(
             $self->_load_changes($change)
-        ) or hurl {
-            ident => 'revert',
-            message => __x(
+        ) or do {
+            $sqitch->info(__x(
                 'No changes deployed since: "{change}"',
                 change => $to,
-            ),
-            exitval => 1,
+            ));
+            return $self;
         };
 
         if ($self->no_prompt) {
@@ -280,18 +300,17 @@ sub revert {
                 ident   => 'revert:confirm',
                 message => __ 'Nothing reverted',
                 exitval => 1,
-            } unless $sqitch->ask_y_n(__x(
+            } unless $sqitch->ask_yes_no(__x(
                 'Revert changes to {change} from {destination}?',
                 change      => $change->format_name_with_tags,
                 destination => $self->destination,
-            ), $self->prompt_accept ? 'Yes' : 'No' );
+            ), $self->prompt_accept );
         }
 
     } else {
-        @changes = $self->deployed_changes or hurl {
-            ident   => 'revert',
-            message => __ 'Nothing to revert (nothing deployed)',
-            exitval => 1,
+        @changes = $self->deployed_changes or do {
+            $sqitch->info(__ 'Nothing to revert (nothing deployed)');
+            return $self;
         };
 
         if ($self->no_prompt) {
@@ -304,10 +323,10 @@ sub revert {
                 ident   => 'revert',
                 message => __ 'Nothing reverted',
                 exitval => 1,
-            } unless $sqitch->ask_y_n(__x(
+            } unless $sqitch->ask_yes_no(__x(
                 'Revert all changes from {destination}?',
                 destination => $self->destination,
-            ), $self->prompt_accept ? 'Yes' : 'No' );
+            ), $self->prompt_accept );
         }
     }
 
@@ -330,25 +349,22 @@ sub revert {
 
 sub verify {
     my ( $self, $from, $to ) = @_;
+    $self->_check_registry;
     my $sqitch   = $self->sqitch;
     my $plan     = $self->plan;
     my @changes  = $self->_load_changes( $self->deployed_changes );
 
-    $self->sqitch->info(__x(
+    $sqitch->info(__x(
         'Verifying {destination}',
         destination => $self->destination,
     ));
 
     if (!@changes) {
-        # Probably expected, but exit 1 anyway.
         my $msg = $plan->count
             ? __ 'No changes deployed'
             : __ 'Nothing to verify (no planned or deployed changes)';
-        hurl {
-            ident   => 'verify',
-            message => $msg,
-            exitval => 1,
-        };
+        $sqitch->info($msg);
+        return $self;
     }
 
     if ($plan->count == 0) {
@@ -357,15 +373,8 @@ sub verify {
     }
 
     # Figure out where to start and end relative to the plan.
-    my $from_idx = defined $from
-        ? $self->_trim_to('verify', $from, \@changes)
-        : 0;
-
-    my $to_idx = defined $to ? $self->_trim_to('verify', $to, \@changes, 1) : do {
-        if (my $id = $self->latest_change_id) {
-            $plan->index_of( $id );
-        }
-    } // $plan->count - 1;
+    my $from_idx = $self->_from_idx('verify', $from, \@changes);
+    my $to_idx = $self->_to_idx('verify', $to, \@changes);
 
     # Run the verify tests.
     if ( my $count = $self->_verify_changes($from_idx, $to_idx, !$to, @changes) ) {
@@ -388,12 +397,28 @@ sub verify {
     return $self;
 }
 
+sub _from_idx {
+    my ( $self, $ident, $from, $changes) = @_;
+    return 0 unless defined $from;
+    return $self->_trim_to($ident, $from, $changes)
+}
+
+sub _to_idx {
+    my ( $self, $ident, $to, $changes) = @_;
+    my $plan = $self->plan;
+    return $self->_trim_to($ident, $to, $changes, 1) if defined $to;
+    if (my $id = $self->latest_change_id) {
+        return $plan->index_of( $id ) // $plan->count - 1;
+    }
+    return $plan->count - 1;
+}
+
 sub _trim_to {
     my ( $self, $ident, $key, $changes, $pop ) = @_;
     my $sqitch = $self->sqitch;
     my $plan   = $self->plan;
 
-    # Find the change in the database.
+    # Find the to change in the database.
     my $to_id = $self->change_id_for_key( $key ) || hurl $ident => (
         $plan->contains( $key ) ? __x(
             'Change "{change}" has not been deployed',
@@ -410,7 +435,7 @@ sub _trim_to {
         change => $key,
     );
 
-    # Pope or shift changes till we find the change we want.
+    # Pop or shift changes till we find the change we want.
     if ($pop) {
         pop @{ $changes }   while $changes->[-1]->id ne $to_id;
     } else {
@@ -471,7 +496,7 @@ sub _verify_changes {
         $errcount += $errs;
     }
 
-    # List off any undeployed changes.
+    # List any undeployed changes.
     for my $idx ($from_idx..$to_idx) {
         next if defined first { $_ == $idx } @seen;
         my $change = $plan->change_at( $idx );
@@ -485,7 +510,7 @@ sub _verify_changes {
         $errcount++;
     }
 
-    # List off any pending changes.
+    # List any pending changes.
     if ($pending && $to_idx < ($plan->count - 1)) {
         if (my @pending = map {
             $plan->change_at($_)
@@ -560,21 +585,22 @@ sub check_deploy_dependencies {
 
     if (@conflicts or @required) {
         require List::MoreUtils;
+        my $listof = sub { List::MoreUtils::uniq(map { $_->as_string } @_) };
         # Dependencies not satisfied. Put together the error messages.
         my @msg;
         push @msg, __nx(
             'Conflicts with previously deployed change: {changes}',
             'Conflicts with previously deployed changes: {changes}',
             scalar @conflicts,
-            changes => join ' ', map { $_->as_string } @conflicts,
-        ) if @conflicts = List::MoreUtils::uniq(@conflicts);
+            changes => join ' ', @conflicts,
+        ) if @conflicts = $listof->(@conflicts);
 
         push @msg, __nx(
             'Missing required change: {changes}',
             'Missing required changes: {changes}',
             scalar @required,
-            changes => join ' ', map { $_->as_string } @required,
-        ) if @required = List::MoreUtils::uniq(@required);
+            changes => join ' ', @required,
+        ) if @required = $listof->(@required);
 
         hurl deploy => join "\n" => @msg;
     }
@@ -634,11 +660,13 @@ sub change_id_for_depend {
           || defined $dep->change
           || defined $dep->tag;
 
+    # Return the first one.
     return $self->change_id_for(
         change_id => $dep->id,
         change    => $dep->change,
         tag       => $dep->tag,
         project   => $dep->project,
+        first     => 1,
     );
 }
 
@@ -650,7 +678,7 @@ sub _params_for_key {
     my @off = ( offset => $offset );
     return ( @off, change => $cname, tag => $tag ) if $tag;
     return ( @off, change_id => $cname ) if $cname =~ /^[0-9a-f]{40}$/;
-    return ( @off, tag => '@' . $cname ) if $cname eq 'HEAD' || $cname eq 'ROOT';
+    return ( @off, tag => $cname ) if $cname eq 'HEAD' || $cname eq 'ROOT';
     return ( @off, change => $cname );
 }
 
@@ -753,6 +781,33 @@ sub _load_changes {
     return @changes;
 }
 
+sub _handle_lookup_index {
+    my ( $self, $change, $ids ) = @_;
+
+    # Return if 0 or 1 ID.
+    return $ids->[0] if @{ $ids } <= 1;
+
+    # Too many found! Let the user know.
+    my $sqitch = $self->sqitch;
+    $sqitch->vent(__x(
+        'Change "{change}" is ambiguous. Please specify a tag-qualified change:',
+        change => $change,
+    ));
+
+    # Lookup, emit reverse-chron list of tag-qualified changes, and die.
+    my $plan = $self->plan;
+    for my $id ( reverse @{ $ids } ) {
+        # Look in the plan, first.
+        if ( my $change = $plan->find($id) ) {
+            $self->sqitch->vent( '  * ', $change->format_tag_qualified_name )
+        } else {
+            # Look it up in the database.
+            $self->sqitch->vent( '  * ', $self->name_for_change_id($id) // '' )
+        }
+    }
+    hurl engine => __ 'Change Lookup Failed';
+}
+
 sub _deploy_by_change {
     my ( $self, $plan, $to_index ) = @_;
 
@@ -849,13 +904,6 @@ sub _sync_plan {
             file   => $plan->file,
         );
 
-        my $change = $plan->change_at($idx);
-        if ($state->{change_id} eq $change->old_id) {
-            # Old IDs need to be replaced.
-            $idx    = $self->_update_ids;
-            $change = $plan->change_at($idx);
-        }
-
         # Upgrade the registry if there is no script_hash column.
         unless ( exists $state->{script_hash} ) {
             $self->upgrade_registry;
@@ -863,10 +911,13 @@ sub _sync_plan {
         }
 
         # Update the script hashes if they're the same as the change ID.
+        # DEPRECATTION: Added in v0.998 (Jan 2015, c86cba61c); consider removing
+        # in the future when all databases are likely to be updated already.
         $self->_update_script_hashes if $state->{script_hash}
             && $state->{script_hash} eq $state->{change_id};
 
         $plan->position($idx);
+        my $change = $plan->change_at($idx);
         if (my @tags = $change->tags) {
             $self->log_new_tags($change);
             $self->start_at( $change->format_name . $tags[-1]->format_name );
@@ -879,16 +930,6 @@ sub _sync_plan {
     }
     }
     return $plan;
-}
-
-sub _update_ids {
-    # We do nothing but inform, by default.
-    my $self = shift;
-    $self->sqitch->info(__x(
-        'Updating legacy change and tag IDs in {destination}',
-        destination => $self->destination,
-    ));
-    return $self;
 }
 
 sub is_deployed {
@@ -1009,7 +1050,7 @@ sub _check_registry {
     ) if $newver < $oldver;
 
     hurl engine => __x(
-        'Registry is at version {old} but latest is {new}. Please run the "upgrade" conmand',
+        'Registry is at version {old} but latest is {new}. Please run the "upgrade" command',
         old => $oldver,
         new => $newver,
     ) if $newver > $oldver;
@@ -1045,6 +1086,11 @@ sub upgrade_registry {
     ) unless @scripts && $scripts[-1]->[0] == $newver;
 
     # Run the upgrades.
+    $sqitch->info(__x(
+        'Upgrading the Sqitch registry from {old} to {new}',
+        old => $oldver,
+        new => $newver,
+    ));
     for my $script (@scripts) {
         my ($version, $file) = @{ $script };
         $sqitch->info('  * ' . __x(
@@ -1056,6 +1102,80 @@ sub upgrade_registry {
         $self->_register_release($version);
         $oldver = $version;
     }
+
+    return $self;
+}
+
+sub _find_planned_deployed_divergence_idx {
+    my ($self, $from_idx, @deployed_changes) = @_;
+    my $i = -1;
+    my $plan = $self->plan;
+
+    foreach my $change (@deployed_changes) {
+        $i++;
+        return $i if $i + $from_idx >= $plan->count
+            || $change->script_hash ne $plan->change_at($i + $from_idx)->script_hash;
+    }
+
+    return -1;
+}
+
+sub planned_deployed_common_ancestor_id {
+    my ( $self ) = @_;
+    my @deployed_changes = $self->_load_changes( $self->deployed_changes );
+    my $divergent_idx = $self->_find_planned_deployed_divergence_idx(0, @deployed_changes);
+
+    return $deployed_changes[-1]->id if $divergent_idx == -1;
+    return undef if $divergent_idx == 0;
+    return $deployed_changes[$divergent_idx - 1]->id;
+}
+
+sub check {
+    my ( $self, $from, $to ) = @_;
+    $self->_check_registry;
+    my $sqitch   = $self->sqitch;
+    my $plan     = $self->plan;
+    my @deployed_changes  = $self->_load_changes( $self->deployed_changes );
+    my $num_failed = 0;
+
+    $sqitch->info(__x(
+        'Checking {destination}',
+        destination => $self->destination,
+    ));
+
+    if (!@deployed_changes) {
+        my $msg = $plan->count
+            ? __ 'No changes deployed'
+            : __ 'Nothing to check (no planned or deployed changes)';
+        $sqitch->info($msg);
+        return $self;
+    }
+
+    # Figure out where to start and end relative to the plan.
+    my $from_idx = $self->_from_idx('check', $from, \@deployed_changes);
+    $self->_to_idx('check', $to, \@deployed_changes);
+
+    my $divergent_change_idx = $self->_find_planned_deployed_divergence_idx($from_idx, @deployed_changes);
+    if ($divergent_change_idx != -1) {
+        $num_failed++;
+        $sqitch->emit(__x(
+            'Script signatures diverge at change {change}',
+            change => $deployed_changes[$divergent_change_idx]->format_name_with_tags,
+        ));
+    }
+
+    hurl {
+        ident => 'check',
+        message => __nx(
+            'Failed one check',
+            'Failed {count} checks',
+            $num_failed,
+            count => $num_failed,
+        ),
+        exitval => $num_failed,
+    } if $num_failed;
+
+    $sqitch->emit(__ 'Check successful');
 
     return $self;
 }
@@ -1358,10 +1478,8 @@ The current Sqitch object.
 
 =head3 C<target>
 
-A string identifying the database target.
-
-Returns the name of the target database. This will usually be the name of
-target specified on the command-line, or the default.
+An L<App::Sqitch::Target> object identifying the database target, usually
+derived from the name of target specified on the command-line, or the default.
 
 =head3 C<uri>
 
@@ -1403,6 +1521,62 @@ A hash of engine client variables to be set. May be set and retrieved as a
 list.
 
 =head2 Instance Methods
+
+=head3 C<username>
+
+  my $username = $engine->username;
+
+The username to use to connect to the database, for engines that require
+authentication. The username is looked up in the following places, returning
+the first to have a value:
+
+=over
+
+=item 1.
+
+The C<$SQITCH_USERNAME> environment variable.
+
+=item 2.
+
+The username from the target URI.
+
+=item 3.
+
+An engine-specific default password, which may be derived from an environment
+variable, engine configuration file, the system user, or none at all.
+
+=back
+
+See L<sqitch-authentication> for details and best practices for Sqitch engine
+authentication.
+
+=head3 C<password>
+
+  my $password = $engine->password;
+
+The password to use to connect to the database, for engines that require
+authentication. The password is looked up in the following places, returning
+the first to have a value:
+
+=over
+
+=item 1.
+
+The C<$SQITCH_PASSWORD> environment variable.
+
+=item 2.
+
+The password from the target URI.
+
+=item 3.
+
+An engine-specific default password, which may be derived from an environment
+variable, engine configuration file, or none at all.
+
+=back
+
+See L<sqitch-authentication> for details and best practices for Sqitch engine
+authentication.
 
 =head3 C<registry_destination>
 
@@ -1516,6 +1690,23 @@ Changes without verify scripts will emit a warning, but not constitute a
 failure. If there are any failures, an exception will be thrown once all
 verifications have completed.
 
+=head3 C<check>
+
+  $engine->check;
+  $engine->check( $from );
+  $engine->check( $from, $to );
+  $engine->check( undef, $to );
+
+Compares the state of the working directory and the database by comparing the
+SHA1 hashes of the deploy scripts. Fails and reports divergence for all
+changes with non-matching hashes, indicating that the project deploy scripts
+differ from the scripts that were used to deploy to the database.
+
+Pass in change identifiers, as described in L<sqitchchanges>, to limit the
+changes to check. For each change, information will be emitted if the SHA1
+digest of the current deploy script does not match its SHA1 digest at the
+time of deployment.
+
 =head3 C<check_deploy_dependencies>
 
   $engine->check_deploy_dependencies;
@@ -1603,7 +1794,7 @@ matches no changes.
 
 Searches the deployed changes for a change corresponding to the specified key,
 which should be in a format as described in L<sqitchchanges>, and returns the
-change's ID. Throws an exception if the key matches more than one changes.
+change's ID. Throws an exception if the key matches more than one change.
 Returns C<undef> if it matches no changes.
 
 =head3 C<change_for_key>
@@ -1774,8 +1965,8 @@ throws an exception
 
 Registers the current project plan in the registry database. The
 implementation should insert the project name and URI if they have not already
-been inserted. If a project with the same name but different URI already
-exists, an exception should be thrown.
+been inserted. If a project already exists with the same name but different
+URI, or a different name and the same URI, an exception should be thrown.
 
 =head3 C<is_deployed_tag>
 
@@ -1804,32 +1995,38 @@ re-deployed.
   say $engine->change_id_for(
       change  => $change_name,
       tag     => $tag_name,
-      offset  => $offset,
       project => $project,
-);
+  );
 
-Searches the database for the change with the specified name, tag, and offset.
-The parameters are as follows:
+Searches the database for the change with the specified name, tag, project,
+or ID. Returns C<undef> if it matches no changes. If it matches more than one
+change, it returns the earliest deployed change if the C<first> parameter is
+passed; otherwise it throws an exception The parameters are as follows:
 
 =over
 
 =item C<change>
 
-The name of a change. Required unless C<tag> is passed.
+The name of a change. Required unless C<tag> or C<change_id> is passed.
+
+=item C<change_id>
+
+The ID of a change. Required unless C<tag> or C<change> is passed. Useful
+to determine whether an ID in a plan has been deployed to the database.
 
 =item C<tag>
 
 The name of a tag. Required unless C<change> is passed.
 
-=item C<offset>
-
-The number of changes offset from the change found by the tag and/or change
-name. May be positive or negative to mean later or earlier changes,
-respectively. Defaults to 0.
-
 =item C<project>
 
 The name of the project to search. Defaults to the current project.
+
+=item C<first>
+
+Return the earliest deployed change ID if the search matches more than one
+change. If false or not passed and more than one change is found, an
+exception will be thrown.
 
 =back
 
@@ -1968,10 +2165,11 @@ should be the same as for those returned by C<deployed_changes()>.
 
   my $change_name = $engine->name_for_change_id($change_id);
 
-Returns the name of the change identified by the ID argument. If a tag was
-applied to a change after that change, the name will be returned with the tag
-qualification, e.g., C<app_user@beta>. This value should be suitable for
-uniquely identifying the change, and passing to the C<get> or C<index_of>
+Returns the tag-qualified name of the change identified by the ID. If a tag
+was applied to a change after that change, the name will be returned with the
+tag qualification, e.g., C<app_user@beta>. Otherwise, it will include the
+symbolic tag C<@HEAD>. e.g., C<widgets@HEAD>. This value should be suitable
+for uniquely identifying the change, and passing to the C<get> or C<index_of>
 methods of L<App::Sqitch::Plan>.
 
 =head3 C<registered_projects>
@@ -2325,6 +2523,15 @@ number of changes before or after the change, as appropriate.
 Like C<change_offset_from_id()> but returns the change ID rather than the
 change object.
 
+=head3 C<planned_deployed_common_ancestor_id>
+
+  my $change_id = $engine->planned_deployed_common_ancestor_id;
+
+Compares the SHA1 hashes of the deploy scripts to their values at the time of
+deployment to the database and returns the latest change ID prior to any
+changes for which the values diverge. Used for the C<--modified> option to
+the C<revert> and C<rebase> commands.
+
 =head3 C<registry_version>
 
 Should return the current version of the target's registry.
@@ -2345,7 +2552,7 @@ David E. Wheeler <david@justatheory.com>
 
 =head1 License
 
-Copyright (c) 2012-2015 iovation Inc.
+Copyright (c) 2012-2020 iovation Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

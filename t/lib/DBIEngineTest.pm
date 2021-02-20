@@ -63,6 +63,11 @@ sub run {
             @sqitch_params,
             user_name  => $user1_name,
             user_email => $user1_email,
+            config => TestConfig->new(
+                'core.engine'    => $class->key,
+                'core.top_dir'   => dir(qw(t engine))->stringify,
+                'core.plan_file' => file(qw(t engine sqitch.plan))->stringify,
+            )
         );
         my $target = App::Sqitch::Target->new(
             sqitch => $sqitch,
@@ -77,14 +82,19 @@ sub run {
             try {
                 $code->( $engine ) || die 'NO';
             } catch {
+                (my $msg = eval { $_->message } || $_) =~ s/^/# /g;
                 plan skip_all => sprintf(
                     'Unable to live-test %s engine: %s',
                     $class->name,
-                    eval { $_->message } || $_
-                );
-            };
+                    substr($msg, 2),
+                ) unless $ENV{'LIVE_' . uc $engine->key . '_REQUIRED'};
+                fail 'Connect to ' . $class->name;
+                diag substr $msg, 2;
+            } or return;
         }
-
+        if (my $q = $p{version_query}) {
+            say '# Connected to ', $engine->dbh->selectcol_arrayref($q)->[0];
+        }
         ok $engine, 'Engine instantiated';
 
         ok !$engine->initialized, 'Database should not yet be initialized';
@@ -117,7 +127,11 @@ sub run {
             my @args;
             $sqitch_mocker->mock(info => sub { shift; push @args => @_ });
             ok $engine->upgrade_registry, 'Upgrade the registry';
-            is_deeply \@args, ['  * ' . __x(
+            is_deeply \@args, [__x(
+                'Upgrading the Sqitch registry from {old} to {new}',
+                old => 0,
+                new => '1.1',
+            ), '  * ' . __x(
                 'From {old} to {new}',
                 old => 0,
                 new => '1.0',
@@ -209,7 +223,7 @@ sub run {
         MOCKPROJECT: {
             my $plan_mocker = Test::MockModule->new(ref $target->plan );
             $plan_mocker->mock(project => 'groovy');
-            $plan_mocker->mock(uri     => 'http://example.com/');
+            $plan_mocker->mock(uri     => 'https://example.com/');
             ok $engine->register_project, 'Register a second project';
         }
 
@@ -219,14 +233,14 @@ sub run {
             'SELECT project, uri, creator_name, creator_email FROM projects ORDER BY created_at'
         ), [
             ['engine', undef, $sqitch->user_name, $sqitch->user_email],
-            ['groovy', 'http://example.com/', $sqitch->user_name, $sqitch->user_email],
+            ['groovy', 'https://example.com/', $sqitch->user_name, $sqitch->user_email],
         ], 'Both projects should now be registered';
 
         # Try to register with a different URI.
         MOCKURI: {
             my $plan_mocker = Test::MockModule->new(ref $target->plan );
             my $plan_proj = 'engine';
-            my $plan_uri = 'http://example.net/';
+            my $plan_uri = 'https://example.net/';
             $plan_mocker->mock(project => sub { $plan_proj });
             $plan_mocker->mock(uri => sub { $plan_uri });
             throws_ok { $engine->register_project } 'App::Sqitch::X',
@@ -247,7 +261,7 @@ sub run {
                 'Cannot register "{project}" with URI {uri}: already exists with URI {reg_uri}',
                 project => 'groovy',
                 uri     => $plan_uri,
-                reg_uri => 'http://example.com/',
+                reg_uri => 'https://example.com/',
             ), 'Different URI error message should be correct';
 
             # Try with a NULL project URI.
@@ -258,11 +272,11 @@ sub run {
             is $@->message, __x(
                 'Cannot register "{project}" without URI: already exists with URI {uri}',
                 project => 'groovy',
-                uri     => 'http://example.com/',
+                uri     => 'https://example.com/',
             ), 'NULL plan uri error message should be correct';
 
             # It should succeed when the name and URI are the same.
-            $plan_uri = 'http://example.com/';
+            $plan_uri = 'https://example.com/';
             ok $engine->register_project, 'Register "groovy" again';
             is_deeply [ $engine->registered_projects ], ['engine', 'groovy'],
                 'Should still have two registered projects';
@@ -270,7 +284,7 @@ sub run {
                 'SELECT project, uri, creator_name, creator_email FROM projects ORDER BY created_at'
             ), [
                 ['engine', undef, $sqitch->user_name, $sqitch->user_email],
-                ['groovy', 'http://example.com/', $sqitch->user_name, $sqitch->user_email],
+                ['groovy', 'https://example.com/', $sqitch->user_name, $sqitch->user_email],
             ], 'Both projects should still be registered';
 
             # Now try the same URI but a different name.
@@ -669,8 +683,8 @@ sub run {
         is_deeply all_events($engine), \@event_data,
             'The new change deploy should have been logged';
 
-        is $engine->name_for_change_id($change2->id), 'widgets',
-            'name_for_change_id() should return just the change name';
+        is $engine->name_for_change_id($change2->id), 'widgets@HEAD',
+            'name_for_change_id() should return name with symbolic tag @HEAD';
 
         ok $state = $engine->current_state, 'Get the current state again';
         isa_ok $dt = delete $state->{committed_at}, 'App::Sqitch::DateTime',
@@ -785,6 +799,7 @@ sub run {
             planner_name  => $change->planner_name,
             planner_email => $change->planner_email,
             tags          => ['@alpha'],
+            script_hash   => $change->script_hash,
         };
         my $change2_hash = {
             id            => $change2->id,
@@ -795,6 +810,7 @@ sub run {
             planner_name  => $change2->planner_name,
             planner_email => $change2->planner_email,
             tags          => [],
+            script_hash   => $change2->script_hash,
         };
 
         is_deeply [$engine->deployed_changes], [$change_hash, $change2_hash],
@@ -1242,18 +1258,8 @@ sub run {
                 $change->id,
             ],
             [
-                'FIRST',
-                { tag => 'FIRST' },
-                $change->id,
-            ],
-            [
                 'HEAD',
                 { tag => 'HEAD' },
-                $barney->id,
-            ],
-            [
-                'LAST',
-                { tag => 'LAST' },
                 $barney->id,
             ],
             [
@@ -1435,8 +1441,8 @@ sub run {
         # Make sure name_for_change_id() works properly.
         ok $engine->dbh->do(q{DELETE FROM tags WHERE project = 'engine'}),
             'Delete the engine project tags';
-        is $engine->name_for_change_id($change2->id), 'widgets',
-            'name_for_change_id() should return "widgets" for its ID';
+        is $engine->name_for_change_id($change2->id), 'widgets@HEAD',
+            'name_for_change_id() should return "widgets@HEAD" for its ID';
         is $engine->name_for_change_id($ext_change2->id), 'outside_in@meta',
             'name_for_change_id() should return "outside_in@meta" for its ID';
 
@@ -1583,72 +1589,12 @@ sub run {
         $mock_dbh->unmock('do');
 
         ######################################################################
-        if ($class eq 'App::Sqitch::Engine::pg') {
-            # Test _update_ids by old ID; required only for pg, which was the
-            # only engine that existed at the time.
-            my @proj_changes = ($change, $change2, $fred, $barney, $hyper);
-            my @all_changes  = ($change, $change2, $fred, $barney, $ext_change, $ext_change2, $hyper, $ext_change3);
-            my @proj_tags    = ($change->tags, $beta, $gamma);
-            my @all_tags     = (@proj_tags, $ext_tag);
-
-            # Let's just revert and re-deploy them all.
-            ok $engine->log_revert_change($_),
-                'Revert "' . $_->name . '" change' for reverse @all_changes;
-            ok $engine->log_deploy_change($_),
-                'Deploy "' . $_->name . '" change' for @all_changes;
-
-            my $upd_change = $engine->dbh->prepare(
-                'UPDATE changes SET change_id = ? WHERE change_id = ?'
-            );
-            my $upd_tag = $engine->dbh->prepare(
-                'UPDATE tags SET tag_id = ? WHERE tag_id = ?'
-            );
-
-            for my $change (@proj_changes) {
-                $upd_change->execute($change->old_id, $change->id);
-            }
-            for my $tag (@proj_tags) {
-                $upd_tag->execute($tag->old_id, $tag->id);
-            }
-
-            # Mock Engine to silence the info notice.
-            my $mock_engine = Test::MockModule->new('App::Sqitch::Engine');
-            $mock_engine->mock(plan => $plan);
-            $mock_engine->mock(_update_ids => sub { shift });
-
-            is $engine->_update_ids, 10, 'Update IDs by old ID should return 10';
-
-            # All of the current project changes should be updated.
-            is_deeply [ map { [@{$_}[0,1]] } @{ all_changes($engine) }],
-                [ map { [ $_->id, $_->name ] } @all_changes ],
-                'All of the change IDs should have been updated';
-
-            # All of the current project tags should be updated.
-            is_deeply [ map { [@{$_}[0,1]] } @{ all_tags($engine) }],
-                [ map { [ $_->id, $_->format_name ] } @all_tags ],
-                'All of the tag IDs should have been updated';
-
-            # Now reset them so they have to be found by name.
-            $i = 0;
-            for my $change (@proj_changes) {
-                $upd_change->execute($change->old_id . $i++, $change->id);
-            }
-            for my $tag (@proj_tags) {
-                $upd_tag->execute($tag->old_id . $i++, $tag->id);
-            }
-
-            is $engine->_update_ids, 10, 'Update IDs by name should also return 10';
-
-            # All of the current project changes should be updated.
-            is_deeply [ map { [@{$_}[0,1]] } @{ all_changes($engine) }],
-                [ map { [ $_->id, $_->name ] } @all_changes ],
-                'All of the change IDs should have been updated by name';
-
-            # All of the current project tags should be updated.
-            is_deeply [ map { [@{$_}[0,1]] } @{ all_tags($engine) }],
-                [ map { [ $_->id, $_->format_name ] } @all_tags ],
-                'All of the tag IDs should have been updated by name';
-        }
+        # Revert and re-deploy all the changes.
+        my @all_changes  = ($change, $change2, $fred, $barney, $ext_change, $ext_change2, $hyper, $ext_change3);
+        ok $engine->log_revert_change($_),
+            'Revert "' . $_->name . '" change' for reverse @all_changes;
+        ok $engine->log_deploy_change($_),
+            'Deploy "' . $_->name . '" change' for @all_changes;
 
         ######################################################################
         # Add a reworked change.
@@ -1667,9 +1613,35 @@ sub run {
             $tmp_dir->file( $deploy_file->basename )->copy_to($deploy_file);
         };
 
-        # Make sure that change_id_for() is okay with the dupe.
-        is $engine->change_id_for( change => 'users'), $change->id,
-            'change_id_for() should find the earliest change ID';
+        # Make sure that change_id_for() chokes on the dupe.
+        MOCKVENT: {
+            my $sqitch_mocker = Test::MockModule->new(ref $sqitch);
+            my @args;
+            $sqitch_mocker->mock(vent => sub { shift; push @args => \@_ });
+            throws_ok { $engine->change_id_for( change => 'users') } 'App::Sqitch::X',
+                'Should die on ambiguous change spec';
+            is $@->ident, 'engine', 'Mode should be "engine"';
+            is $@->message, __ 'Change Lookup Failed',
+                'And it should report change lookup failure';
+            is_deeply \@args, [
+                [__x(
+                    'Change "{change}" is ambiguous. Please specify a tag-qualified change:',
+                    change => 'users',
+                )],
+                [ '  * ', $rev_change->format_name . '@HEAD' ],
+                [ '  * ', $change->format_tag_qualified_name ],
+            ], 'Should have vented output for lookup failure';
+
+            # But it should work okay if we ask for the first ID.
+            ok my $id = $engine->change_id_for(change => 'users', first => 1),
+                'Should get ID for first of ambiguous change spec';
+            is $id, $change->id, 'Should now have first change id';
+        }
+
+        is $engine->change_id_for( change => 'users', tag => 'alpha'), $change->id,
+            'change_id_for() should find the tag-qualified change ID';
+        is $engine->change_id_for( change => 'users', tag => 'HEAD'), $rev_change->id,
+            'change_id_for() should find the reworked change ID @HEAD';
 
         ######################################################################
         # Tag and Rework the change again.
@@ -1692,8 +1664,8 @@ sub run {
         # make sure that change_id_for is still good with things.
         for my $spec (
             [
-                'first instance of change',
-                { change => 'users' },
+                'alpha instance of change',
+                { change => 'users', tag => 'alpha' },
                 $change->id,
             ],
             [

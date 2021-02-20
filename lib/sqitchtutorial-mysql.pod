@@ -15,18 +15,22 @@ for deployment planning, and work with other developers to make sure changes
 remain in sync and in the proper order.
 
 We'll start by creating new project from scratch, a fictional antisocial
-networking site called Flipr. All examples use L<Git|http://git-scm.com/> as
-the VCS and L<MySQL|http://dev.mysql.com/> as the storage engine.
+networking site called Flipr. All examples use L<Git|https://git-scm.com/> as
+the VCS and L<MySQL|https://dev.mysql.com/> as the storage engine.
 
-If you'd like to manage an PostgreSQL database, see L<sqitchtutorial>.
+If you'd like to manage a PostgreSQL database, see L<sqitchtutorial>.
 
 If you'd like to manage an SQLite database, see L<sqitchtutorial-sqlite>.
 
 If you'd like to manage an Oracle database, see L<sqitchtutorial-oracle>.
 
-If you'd like to manage an Firebird database, see L<sqitchtutorial-firebird>.
+If you'd like to manage a Firebird database, see L<sqitchtutorial-firebird>.
 
-If you'd like to manage an Vertica database, see L<sqitchtutorial-vertica>.
+If you'd like to manage a Vertica database, see L<sqitchtutorial-vertica>.
+
+If you'd like to manage an Exasol database, see L<sqitchtutorial-exasol>.
+
+If you'd like to manage a Snowflake database, see L<sqitchtutorial-snowflake>.
 
 If you'd like to manage an MS SQL Server database, see L<sqitchtutorial-mssql>.
 
@@ -42,19 +46,20 @@ source code repository. So let's do that with Git:
   > touch README.md
   > git add .
   > git commit -am 'Initialize project, add README.'
-  [master (root-commit) fdf2a40] Initialize project, add README.
+  [main (root-commit) fdf2a40] Initialize project, add README.
    1 file changed, 38 insertions(+)
    create mode 100644 README.md
 
 If you're a Git user and want to follow along the history, the repository used
-in these examples is L<on GitHub|https://github.com/theory/sqitch-mysql-intro>.
+in these examples is L<on GitHub|https://github.com/sqitchers/sqitch-mysql-intro>.
 
 Now that we have a repository, let's get started with Sqitch. Every Sqitch
 project must have a name associated with it, and, optionally, a unique URI. We
 recommend including the URI, as it increases the uniqueness of object
-identifiers internally, so let's specify one when we initialize Sqitch:
+identifiers internally, and will prevent the deployment of a different project
+with the same name. So let's specify one when we initialize Sqitch:
 
-  > sqitch init flipr --uri https://github.com/theory/sqitch-mysql-intro/ --engine mysql
+  > sqitch init flipr --uri https://github.com/sqitchers/sqitch-mysql-intro/ --engine mysql
   Created sqitch.conf
   Created sqitch.plan
   Created deploy/
@@ -71,7 +76,7 @@ Let's have a look at F<sqitch.conf>:
   # [engine "mysql"]
   	# target = db:mysql:
   	# registry = sqitch
-  	# client = /usr/local/mysql/bin/mysql
+  	# client = mysql
 
 Good, it picked up on the fact that we're creating changes for the MySQL
 engine, thanks to the C<--engine mysql> option, and saved it to the file.
@@ -84,7 +89,9 @@ settings. But it will also read F<~/.sqitch/sqitch.conf> for user-specific
 settings. Since MySQL's
 L<C<mysql> client|https://dev.mysql.com/doc/refman/5.6/en/mysql.html> is not
 in the path on my system, let's go ahead an tell it where to find the client
-on our computer:
+on our computer (don't bother if you're using the
+L<Docker image|https://hub.docker.com/r/sqitch/sqitch/> because it uses the
+client inside the container, not on your host machine):
 
   > sqitch config --user engine.mysql.client /usr/local/mysql/bin/mysql
 
@@ -111,7 +118,7 @@ Back to the repository. Have a look at the plan file, F<sqitch.plan>:
   > cat sqitch.plan
   %syntax-version=1.0.0
   %project=flipr
-  %uri=https://github.com/theory/sqitch-mysql-intro/
+  %uri=https://github.com/sqitchers/sqitch-mysql-intro/
 
 
 Note that it has picked up on the name and URI of the app we're building.
@@ -123,7 +130,7 @@ Let's commit these changes and start creating the database changes.
 
   > git add .
   > git commit -am 'Initialize Sqitch configuration.'
-  [master 79fe2cc] Initialize Sqitch configuration.
+  [main 79fe2cc] Initialize Sqitch configuration.
    2 files changed, 19 insertions(+)
    create mode 100644 sqitch.conf
    create mode 100644 sqitch.plan
@@ -174,9 +181,14 @@ script, so we edit this to F<revert/appuser.sql> to look like this:
 
   COMMIT;
 
-Now we can try deploying this change:
+Now we can try deploying this change. First, we need to create a database
+to deploy to:
 
   > mysql -u root --execute 'CREATE DATABASE flipr_test'
+
+Now we tell Sqitch where to send the change via a
+L<database URI|https://github.com/libwww-perl/uri-db/>:
+
   > sqitch deploy db:mysql://root@/flipr_test
   Deploying changes to db:mysql://root@/flipr_test
     + appuser .. ok
@@ -337,7 +349,7 @@ Cool. Now let's commit it.
 
   > git add .
   > git commit -m 'Add the "flipr" user.'
-  [master c63acb9] Add the "flipr" user.
+  [main c63acb9] Add the "flipr" user.
    4 files changed, 23 insertions(+)
    create mode 100644 deploy/appuser.sql
    create mode 100644 revert/appuser.sql
@@ -375,14 +387,14 @@ When we look at the status, the deployment will be there:
 
 I'm getting a little tired of always having to type
 C<db:mysql://root@/flipr_test>, aren't you?  This
-L<database connection URI|https://github.com/theory/uri-db/> tells Sqitch how
+L<database connection URI|https://github.com/libwww-perl/uri-db/> tells Sqitch how
 to connect to the deployment target, but we don't have to keep using the URI.
 We can name the target:
 
   > sqitch target add flipr_test db:mysql://root@/flipr_test
 
 The L<C<target>|sqitch-target> command, inspired by
-L<C<git-remote>|http://git-scm.com/docs/git-remote>, allows management of one
+L<C<git-remote>|https://git-scm.com/docs/git-remote>, allows management of one
 or more named deployment targets. We've just added a target named
 C<flipr_test>, which means we can use the string C<flipr_test> for the target,
 rather than the URI. But since we're doing so much testing, we can also tell
@@ -414,7 +426,7 @@ We'll see the L<C<rebase>|sqitch-rebase> command a bit later. In the meantime,
 let's commit the new configuration and and make some more changes!
 
   > git commit -am 'Set default target and always verify.'
-  [master c793050] Set default target and always verify.
+  [main c793050] Set default target and always verify.
    1 file changed, 8 insertions(+)
 
 =head1 Deploy with Dependency
@@ -567,7 +579,7 @@ Okay, let's commit and deploy again:
 
   > git add .
   > git commit -am 'Add users table.'
-  [master 7c99fb0] Add users table.
+  [main 7c99fb0] Add users table.
    4 files changed, 31 insertions(+)
    create mode 100644 deploy/users.sql
    create mode 100644 revert/users.sql
@@ -613,7 +625,7 @@ Now might be a good time to have a look at the deployment plan:
   > cat sqitch.plan
   %syntax-version=1.0.0
   %project=flipr
-  %uri=https://github.com/theory/sqitch-mysql-intro/
+  %uri=https://github.com/sqitchers/sqitch-mysql-intro/
 
   appuser 2013-12-31T21:04:04Z Marge N. O’Vera <marge@example.com> # Creates a an application user.
   users [appuser] 2013-12-31T21:32:48Z Marge N. O’Vera <marge@example.com> # Creates table to track our users.
@@ -765,7 +777,7 @@ the last deployed change. Looks good. Let's do the commit and re-deploy dance:
 
   > git add .
   > git commit -m 'Add `insert_user()` and `change_pass()`.'
-  [master 0f95e13] Add `insert_user()` and `change_pass()`.
+  [main 0f95e13] Add `insert_user()` and `change_pass()`.
    7 files changed, 86 insertions(+)
    create mode 100644 deploy/change_pass.sql
    create mode 100644 deploy/insert_user.sql
@@ -807,7 +819,7 @@ to have it go out with deployments tied to the release, let's tag it:
   > sqitch tag v1.0.0-dev1 -n 'Tag v1.0.0-dev1.'
   Tagged "change_pass" with @v1.0.0-dev1
   > git commit -am 'Tag the database with v1.0.0-dev1.'
-  [master 0595297] Tag the database with v1.0.0-dev1.
+  [main 0595297] Tag the database with v1.0.0-dev1.
    1 file changed, 1 insertion(+)
   > git tag v1.0.0-dev1 -am 'Tag v1.0.0-dev1'
 
@@ -875,6 +887,10 @@ Looks good, eh? Go ahead and revert it:
 
 Now package it up and ship it!
 
+  > cd ..
+  > mv bundle flipr-v1.0.0-dev1
+  > tar -czf flipr-v1.0.0-dev1.tgz flipr-v1.0.0-dev1
+
 =head1 Flip Out
 
 Now that we've got the basics of user management done, let's get to work on
@@ -925,7 +941,7 @@ Edit F<verify/flips.sql>:
     FROM flipr.flips
    WHERE 0;
 
-  COMMIT;
+  ROLLBACK;
 
 And edit F<revert/flips.sql>:
 
@@ -961,7 +977,7 @@ Look good?
   # 
   Nothing to deploy (up-to-date)
 
-Note the use of C<--show tags> to show all the deployed tags. Now make it so:
+Note the use of C<--show-tags> to show all the deployed tags. Now make it so:
 
   > git add .
   > git commit -am 'Add flips table.'
@@ -1073,7 +1089,7 @@ And:
 
   COMMIT;
 
-Check the L<example git repository|https://github.com/theory/sqitch-intro> for
+Check the L<example git repository|https://github.com/sqitchers/sqitch-intro> for
 the complete details. Test L<C<deploy>|sqitch-deploy> and
 L<C<revert>|sqitch-revert>, then commit it to the repository. The status
 should end up looking something like this:
@@ -1091,14 +1107,14 @@ should end up looking something like this:
   # 
   Nothing to deploy (up-to-date)
 
-Good, we've finished this feature. Time to merge back into C<master>.
+Good, we've finished this feature. Time to merge back into C<main>.
 
 =head2 Emergency
 
 Let's do it:
 
-  > git checkout master
-  Switched to branch 'master'
+  > git checkout main
+  Switched to branch 'main'
   > git pull
   Updating 0595297..5a58089
   Fast-forward
@@ -1123,7 +1139,7 @@ Let's do it:
    create mode 100644 verify/insert_list.sql
    create mode 100644 verify/lists.sql
 
-Hrm, that's interesting. Looks like someone made some changes to C<master>.
+Hrm, that's interesting. Looks like someone made some changes to C<main>.
 They added list support. Well, let's see what happens when we merge our
 changes.
 
@@ -1136,38 +1152,38 @@ Oh, a conflict in F<sqitch.plan>. Not too surprising, since both the merged
 C<lists> branch and our C<flips> branch added changes to the plan. Let's try a
 different approach.
 
-The truth is, we got lazy. Those changes when we pulled master from the origin
+The truth is, we got lazy. Those changes when we pulled main from the origin
 should have raised a red flag. It's considered a bad practice not to look at
-what's changed in C<master> before merging in a branch. What one I<should> do
+what's changed in C<main> before merging in a branch. What one I<should> do
 is either:
 
 =over
 
 =item *
 
-Rebase the F<flips> branch from master before merging. This "rewinds" the
-branch changes, pulls from C<master>, and then replays the changes back on top
+Rebase the F<flips> branch from main before merging. This "rewinds" the
+branch changes, pulls from C<main>, and then replays the changes back on top
 of the pulled changes.
 
 =item *
 
-Create a patch and apply I<that> to master. This is the sort of thing you
+Create a patch and apply I<that> to main. This is the sort of thing you
 might have to do if you're sending changes to another user, especially if the
 VCS is not Git.
 
 =back
 
-So let's restore things to how they were at master:
+So let's restore things to how they were at main:
 
   > git reset --hard HEAD
   HEAD is now at 5a58089 Merge branch 'lists'
 
 That throws out our botched merge. Now let's go back to our branch and rebase
-it on C<master>:
+it on C<main>:
 
   > git checkout flips
   Switched to branch 'flips'
-  > git rebase master
+  > git rebase main
   First, rewinding head to replay your work on top of it...
   Applying: Add flips table.
   Using index info to reconstruct a base tree...
@@ -1189,7 +1205,7 @@ resolve conflicts in that file. Except in Git. Fortunately for us, we can tell
 Git to resolve conflicts in F<sqitch.plan> differently. Because we only ever
 append lines to the file, we can have it use the "union" merge driver, which,
 according to L<its
-docs|http://git-scm.com/docs/gitattributes#_built-in_merge_drivers>:
+docs|https://git-scm.com/docs/gitattributes#_built-in_merge_drivers>:
 
 =over
 
@@ -1210,7 +1226,7 @@ Now add the union merge driver to F<.gitattributes> for F<sqitch.plan>
 and rebase again:
 
   > echo sqitch.plan merge=union > .gitattributes
-  > git rebase master
+  > git rebase main
   First, rewinding head to replay your work on top of it...
   Applying: Add flips table.
   Using index info to reconstruct a base tree...
@@ -1228,7 +1244,7 @@ Ah, that looks a bit better. Let's have a look at the plan:
   > cat sqitch.plan
   %syntax-version=1.0.0
   %project=flipr
-  %uri=https://github.com/theory/sqitch-mysql-intro/
+  %uri=https://github.com/sqitchers/sqitch-mysql-intro/
 
   appuser 2013-12-31T21:04:04Z Marge N. O’Vera <marge@example.com> # Creates a an application user.
   users [appuser] 2013-12-31T21:32:48Z Marge N. O’Vera <marge@example.com> # Creates table to track our users.
@@ -1282,10 +1298,10 @@ worthwhile to keep that change:
 
 =head2 Merges Mastered
 
-And now, finally, we can merge into C<master>:
+And now, finally, we can merge into C<main>:
 
-  > git checkout master
-  Switched to branch 'master'
+  > git checkout main
+  Switched to branch 'main'
   > git merge --no-ff flips -m "Merge branch 'flips'"
   Merge made by the 'recursive' strategy.
    .gitattributes         |  1 +
@@ -1316,7 +1332,7 @@ And double-check our work:
   > cat sqitch.plan
   %syntax-version=1.0.0
   %project=flipr
-  %uri=https://github.com/theory/sqitch-mysql-intro/
+  %uri=https://github.com/sqitchers/sqitch-mysql-intro/
 
   appuser 2013-12-31T21:04:04Z Marge N. O’Vera <marge@example.com> # Creates a an application user.
   users [appuser] 2013-12-31T21:32:48Z Marge N. O’Vera <marge@example.com> # Creates table to track our users.
@@ -1331,14 +1347,14 @@ And double-check our work:
   insert_flip [flips appuser] 2013-12-31T21:56:12Z Marge N. O’Vera <marge@example.com> # Creates a function to insert a flip.
   delete_flip [flips appuser] 2013-12-31T21:56:22Z Marge N. O’Vera <marge@example.com> # Creates a function to delete a flip.
 
-Much much better, a nice clean master now. And because it is now identical to
+Much much better, a nice clean main now. And because it is now identical to
 the "flips" branch, we can just carry on. Go ahead and tag it, bundle, and
 release:
 
   > sqitch tag v1.0.0-dev2 -n 'Tag v1.0.0-dev2.'
   Tagged "delete_flip" with @v1.0.0-dev2
   > git commit -am 'Tag the database with v1.0.0-dev2.'
-  [master 76d6e15] Tag the database with v1.0.0-dev2.
+  [main 76d6e15] Tag the database with v1.0.0-dev2.
    1 file changed, 1 insertion(+)
   > git tag v1.0.0-dev2 -am 'Tag v1.0.0-dev2'
   > sqitch bundle --dest-dir flipr-1.0.0-dev2
@@ -1389,7 +1405,7 @@ function to encrypt passwords with a salt, so that they're all unique. But how
 to deploy the changes to C<insert_user()> and C<change_pass()>?
 
 Normally, modifying functions in database changes is a
-L<PITA|http://www.urbandictionary.com/define.php?term=pita>. You have to make
+L<PITA|https://www.urbandictionary.com/define.php?term=pita>. You have to make
 changes like these:
 
 =over
@@ -1447,8 +1463,8 @@ point of fact, it has copied the files to stand in for the previous instance
 of the C<insert_user> change, which we can see via C<git status>:
 
   > git status
-  # On branch master
-  # Your branch is ahead of 'origin/master' by 5 commits.
+  # On branch main
+  # Your branch is ahead of 'origin/main' by 5 commits.
   #   (use "git push" to publish your local commits)
   #
   # Changes not staged for commit:
@@ -1480,7 +1496,7 @@ F<deploy/insert_user.sql> and F<revert/insert_user.sql> are identical. This is
 on the assumption that the deploy script will be changed (we're reworking it,
 remember?), and that the revert script should actually change things back to
 how they were before. Of course, the original deploy script may not be
-L<idempotent|http://en.wikipedia.org/wiki/Idempotence> -- that is, able to be
+L<idempotent|https://en.wikipedia.org/wiki/Idempotence> -- that is, able to be
 applied multiple times without changing the result beyond the initial
 application. If it's not, you will likely need to modify it so that it
 properly restores things to how they were after the original deploy script was
@@ -1619,7 +1635,7 @@ in the new script files that include tags.
 But what about the verify script? How can we verify that the functions have
 been modified to use C<ENCRYPT()>? I think the simplest thing to do is to
 examine the body of the function as returned by
-L<C<INFORMATION_SCHEMA.ROUTINES>|http://dev.mysql.com/doc/refman/5.6/en/routines-table.html>
+L<C<INFORMATION_SCHEMA.ROUTINES>|https://dev.mysql.com/doc/refman/5.6/en/routines-table.html>
 So the C<insert_user> verify script looks like this:
 
   -- Verify flipr:insert_user on mysql
@@ -1659,7 +1675,7 @@ Excellent. Let's go ahead and commit these changes:
 
   > git add .
   > git commit -m 'Use encrypt() to encrypt passwords.'
-  [master abcce73] Use encrypt() to encrypt passwords.
+  [main abcce73] Use encrypt() to encrypt passwords.
    13 files changed, 137 insertions(+), 9 deletions(-)
    create mode 100644 deploy/change_pass@v1.0.0-dev2.sql
    create mode 100644 deploy/insert_user@v1.0.0-dev2.sql
@@ -1689,7 +1705,7 @@ David E. Wheeler <david@justatheory.com>
 
 =head1 License
 
-Copyright (c) 2012-2015 iovation Inc.
+Copyright (c) 2012-2020 iovation Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

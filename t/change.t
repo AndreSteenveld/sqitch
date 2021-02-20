@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use 5.010;
 use utf8;
-use Test::More tests => 93;
+use Test::More tests => 92;
 #use Test::More 'no_plan';
 use Test::NoWarnings;
 use App::Sqitch;
@@ -19,6 +19,8 @@ use File::Path qw(make_path remove_tree);
 use Digest::SHA;
 use Test::MockModule;
 use URI;
+use lib 't/lib';
+use TestConfig;
 
 my $CLASS;
 
@@ -27,16 +29,10 @@ BEGIN {
     require_ok $CLASS or die;
 }
 
-$ENV{SQITCH_CONFIG} = 'nonexistent.conf';
-$ENV{SQITCH_USER_CONFIG} = 'nonexistent.user';
-$ENV{SQITCH_SYSTEM_CONFIG} = 'nonexistent.sys';
-
 can_ok $CLASS, qw(
     name
     info
     id
-    old_info
-    old_id
     lspace
     rspace
     note
@@ -63,16 +59,19 @@ can_ok $CLASS, qw(
     format_name
     format_dependencies
     format_name_with_tags
+    format_tag_qualified_name
     format_name_with_dependencies
     format_op_name_dependencies
     format_planner
     note_prompt
 );
 
-my $sqitch = App::Sqitch->new( options => {
-    engine => 'sqlite',
-    top_dir => dir('test-change')->stringify,
-});
+my $sqitch = App::Sqitch->new(
+    config => TestConfig->new(
+        'core.engine'  => 'sqlite',
+        'core.top_dir' => dir('test-change')->stringify,
+    ),
+);
 my $target = App::Sqitch::Target->new(
     sqitch => $sqitch,
     reworked_dir => dir('test-change/reworked'),
@@ -128,6 +127,8 @@ $change->deploy_file->spew(iomode => '>:raw', encode_utf8 "Foo\nBar\nBøz\n亜�
 $change = $CLASS->new( name => 'foo', plan => $plan );
 is $change->script_hash, 'd48866b846300912570f643c99b2ceec4ba29f5c',
     'Deploy script hash should be correct';
+is $change->format_tag_qualified_name, 'foo@HEAD',
+    'Tag-qualified name should be tagged with @HEAD';
 
 # Identify it as reworked.
 ok $change->add_rework_tags($tag), 'Add a rework tag';
@@ -153,8 +154,10 @@ is_deeply [ $change->path_segments ], ['foo@alpha.sql'],
     'path_segments should now include the correct suffixc';
 
 is $change->format_name, 'foo', 'Name should format as "foo"';
-is $change->format_name_with_tags,
-    'foo', 'Name should format with tags as "foo"';
+is $change->format_name_with_tags, 'foo',
+    'Name should format with tags as "foo"';
+is $change->format_tag_qualified_name, 'foo@beta',
+    'Tag-qualified Name should format as "foo@beta"';
 is $change->format_dependencies, '', 'Dependencies should format as ""';
 is $change->format_name_with_dependencies, 'foo',
     'Name should format with dependencies as "foo"';
@@ -179,18 +182,6 @@ is $change->as_string, "foo $ts " . $change->format_planner,
     'should stringify to "foo" + planner';
 is $change->since_tag, undef, 'Since tag should be undef';
 is $change->parent, undef, 'Parent should be undef';
-is $change->old_info, join("\n",
-   'project change',
-   'change foo',
-   'planner ' . $change->format_planner,
-   'date ' . $change->timestamp->as_string,
-), 'Old change info should be correct';
-is $change->old_id, do {
-    my $content = encode_utf8 $change->old_info;
-    Digest::SHA->new(1)->add(
-        'change ' . length($content) . "\0" . $content
-    )->hexdigest;
-},'Old change ID should be correct';
 
 is $change->info, join("\n",
    'project change',
@@ -248,7 +239,7 @@ is $change2->as_string, "  - yo/howdy  [foo bar \@baz !dr_evil] "
     'It should stringify correctly';
 my $mock_plan = Test::MockModule->new(ref $plan);
 $mock_plan->mock(index_of => 0);
-my $uri = URI->new('https://github.com/theory/sqitch/');
+my $uri = URI->new('https://github.com/sqitchers/sqitch/');
 $mock_plan->mock( uri => $uri );
 
 ok !$change2->is_deploy, 'It should not be a deploy change';
@@ -256,17 +247,10 @@ ok $change2->is_revert, 'It should be a revert change';
 is $change2->action, 'revert', 'It should say so';
 is $change2->since_tag, $tag, 'It should have a since tag';
 is $change2->parent, $change, 'It should have a parent';
-is $change2->old_info, join("\n",
-   'project change',
-   'uri https://github.com/theory/sqitch/',
-   'change yo/howdy',
-   'planner Barack Obama <potus@whitehouse.gov>',
-   'date 2012-07-16T17:25:07Z'
-), 'Old info should not since tag';
 
 is $change2->info, join("\n",
    'project change',
-   'uri https://github.com/theory/sqitch/',
+   'uri https://github.com/sqitchers/sqitch/',
    'change yo/howdy',
    'parent ' . $change->id,
    'planner Barack Obama <potus@whitehouse.gov>',
@@ -286,12 +270,16 @@ ok $change2->add_tag($tag), 'Add a tag';
 is_deeply [$change2->tags], [$tag], 'Should have the tag';
 is $change2->format_name_with_tags, 'yo/howdy @alpha',
     'Should format name with tags';
+is $change2->format_tag_qualified_name, 'yo/howdy@alpha',
+    'Should format tag-qualiified name';
 
 # Add another tag.
 ok $change2->add_tag($tag2), 'Add another tag';
 is_deeply [$change2->tags], [$tag, $tag2], 'Should have both tags';
 is $change2->format_name_with_tags, 'yo/howdy @alpha @beta',
     'Should format name with both tags';
+is $change2->format_tag_qualified_name, 'yo/howdy@alpha',
+    'Should format tag-qualified name with first tag';
 
 is $change2->format_planner, 'Barack Obama <potus@whitehouse.gov>',
     'Planner name and email should format properly';
@@ -365,11 +353,13 @@ is $fh->getline, "-- verify it, baby\n", 'It should be the verify file';
 ##############################################################################
 # Test the requires/conflicts params.
 my $file = file qw(t plans multi.plan);
-my $sqitch2 = App::Sqitch->new(options => {
-    engine    => 'sqlite',
-    top_dir   => dir('test-change')->stringify,
-    plan_file => $file->stringify,
-});
+my $sqitch2 = App::Sqitch->new(
+    config => TestConfig->new(
+        'core.engine'    => 'sqlite',
+        'core.top_dir'   => dir('test-change')->stringify,
+        'core.plan_file' => $file->stringify,
+    ),
+);
 my $target2 = App::Sqitch::Target->new(sqitch => $sqitch2);
 my $plan2 = $target2->plan;
 ok $change2 = $CLASS->new(
@@ -393,20 +383,6 @@ ok $change2 = $CLASS->new(
     name => '阱阪阬',
     plan => $plan2,
 ), 'Create change with UTF-8 name';
-is $change2->old_info, join("\n",
-    'project ' . 'multi',
-    'uri '     . $uri->canonical,
-    'change '  . '阱阪阬',
-    'planner ' . $change2->format_planner,
-    'date '    . $change2->timestamp->as_string,
-), 'The name should be decoded text in old info';
-
-is $change2->old_id, do {
-    my $content = Encode::encode_utf8 $change2->old_info;
-    Digest::SHA->new(1)->add(
-        'change ' . length($content) . "\0" . $content
-    )->hexdigest;
-},'Old change ID should be hashed from encoded UTF-8';
 
 is $change2->info, join("\n",
     'project ' . 'multi',

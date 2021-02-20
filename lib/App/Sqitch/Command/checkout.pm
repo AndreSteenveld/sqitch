@@ -16,7 +16,7 @@ use namespace::autoclean;
 extends 'App::Sqitch::Command';
 with 'App::Sqitch::Role::RevertDeployCommand';
 
-our $VERSION = '0.9995';
+# VERSION
 
 has client => (
     is       => 'ro',
@@ -25,7 +25,7 @@ has client => (
     default  => sub {
         my $sqitch = shift->sqitch;
         return $sqitch->config->get( key => 'core.vcs.client' )
-            || 'git' . ( $^O eq 'MSWin32' ? '.exe' : '' );
+            || 'git' . ( App::Sqitch::ISWIN ? '.exe' : '' );
     },
 );
 
@@ -39,6 +39,9 @@ sub execute {
         args       => \@_,
         no_changes => 1,
     );
+
+    # Branch required.
+    $self->usage unless length $branch;
 
     # Warn on multiple targets.
     my $target = shift @{ $targets };
@@ -75,8 +78,17 @@ sub execute {
         sqitch => $sqitch,
         target => $target,
       )->parse(
+        # Git assumes a relative file name is relative to the repo root, even
+        # when you're in a subdirectory. So we have to prepend the currrent
+        # directory path ./ to convince it to read the file relative to the
+        # current directory. See #560 and
+        # https://git-scm.com/docs/gitrevisions#Documentation/gitrevisions.txt-emltrevgtltpathgtemegemHEADREADMEememmasterREADMEem
+        # for details.
         # XXX Handle missing file/no contents.
-        scalar $sqitch->capture( $git, 'show', "$branch:" . $target->plan_file)
+        scalar $sqitch->capture(
+            $git, 'show', "$branch:"
+            . File::Spec->catfile(File::Spec->curdir, $target->plan_file)
+        )
     );
 
     # Find the last change the plans have in common.
@@ -98,7 +110,7 @@ sub execute {
     ));
 
     # Revert to the last common change.
-    if (my %v = %{ $self->revert_variables }) { $engine->set_variables(%v) }
+    $engine->set_variables( $self->_collect_revert_vars($target) );
     $engine->plan( $from_plan );
     try {
         $engine->revert( $last_common_change->id );
@@ -107,7 +119,7 @@ sub execute {
         die $_ if ! eval { $_->isa('App::Sqitch::X') }
             || $_->exitval > 1
             || $_->ident eq 'revert:confirm';
-        # Emite notice of non-fatal errors (e.g., nothign to revert).
+        # Emite notice of non-fatal errors (e.g., nothing to revert).
         $self->info($_->message)
     };
 
@@ -116,7 +128,7 @@ sub execute {
     $sqitch->run($git, 'checkout', $branch);
 
     # Deploy!
-    if (my %v = %{ $self->deploy_variables}) { $engine->set_variables(%v) }
+    $engine->set_variables( $self->_collect_deploy_vars($target) );
     $engine->plan( $to_plan );
     $engine->deploy( undef, $self->mode);
     return $self;
@@ -186,7 +198,9 @@ The Sqitch command-line client.
 
 =head1 License
 
-Copyright (c) 2012-2015 Ronan Dunklau & iovation Inc.
+Copyright (c) 2012-2020 iovation Inc.
+
+Copyright (c) 2012-2013 Ronan Dunklau
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

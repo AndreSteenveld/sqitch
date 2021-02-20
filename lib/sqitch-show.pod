@@ -1,10 +1,10 @@
 =head1 Name
 
-sqitch-show - Show object information or change file contents
+sqitch-show - Show object information or script contents
 
 =head1 Synopsis
 
-  sqitch show <type> <object>
+  sqitch show [options] <type> <object>
 
 =head1 Description
 
@@ -41,12 +41,27 @@ A change verify script.
 
 =over
 
+=item C<-t>
+
+=item C<--target>
+
+The target database, the plan for which should be read before deciding what
+object to show. This option should be the name of a target in the
+configuration.
+
 =item C<-e>
 
 =item C<--exists>
 
 Suppress all output; instead exit with zero status if C<< <object> >> exists
 and is a valid object.
+
+=item C<--plan-file>
+
+=item C<-f>
+
+Path to the deployment plan file. Overrides target, engine, and core
+configuration values. Defaults to F<$top_dir/sqitch.plan>.
 
 =back
 

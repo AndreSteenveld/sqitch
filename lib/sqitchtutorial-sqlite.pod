@@ -15,18 +15,22 @@ VCS for deployment planning, and work with other developers to make sure
 changes remain in sync and in the proper order.
 
 We'll start by creating new project from scratch, a fictional antisocial
-networking site called Flipr. All examples use L<Git|http://git-scm.com/> as
-the VCS and L<SQLite|http://www.sqlite.org/> as the storage engine.
+networking site called Flipr. All examples use L<Git|https://git-scm.com/> as
+the VCS and L<SQLite|https://www.sqlite.org/> as the storage engine.
 
-If you'd like to manage an PostgreSQL database, see L<sqitchtutorial>.
+If you'd like to manage a PostgreSQL database, see L<sqitchtutorial>.
 
 If you'd like to manage an Oracle database, see L<sqitchtutorial-oracle>.
 
-If you'd like to manage an MySQL database, see L<sqitchtutorial-mysql>.
+If you'd like to manage a MySQL database, see L<sqitchtutorial-mysql>.
 
-If you'd like to manage an Firebird database, see L<sqitchtutorial-firebird>.
+If you'd like to manage a Firebird database, see L<sqitchtutorial-firebird>.
 
-If you'd like to manage an Vertica database, see L<sqitchtutorial-vertica>.
+If you'd like to manage a Vertica database, see L<sqitchtutorial-vertica>.
+
+If you'd like to manage an Exasol database, see L<sqitchtutorial-exasol>.
+
+If you'd like to manage a Snowflake database, see L<sqitchtutorial-snowflake>.
 
 If you'd like to manage an MS SQL Server database, see L<sqitchtutorial-mssql>.
 
@@ -42,19 +46,20 @@ source code repository. So let's do that with Git:
   > touch README.md
   > git add .
   > git commit -m 'Initialize project, add README.'
-  [master (root-commit) 253542e] Initialize project, add README.
+  [main (root-commit) 253542e] Initialize project, add README.
    1 file changed, 37 insertions(+)
    create mode 100644 README.md
 
 If you're a Git user and want to follow along the history, the repository used
-in these examples is L<on GitHub|https://github.com/theory/sqitch-sqlite-intro>.
+in these examples is L<on GitHub|https://github.com/sqitchers/sqitch-sqlite-intro>.
 
 Now that we have a repository, let's get started with Sqitch. Every Sqitch
 project must have a name associated with it, and, optionally, a unique URI. We
 recommend including the URI, as it increases the uniqueness of object
-identifiers internally, so let's specify one when we initialize Sqitch:
+identifiers internally, and will prevent the deployment of a different project
+with the same name. So let's specify one when we initialize Sqitch:
 
-  > sqitch init flipr --uri https://github.com/theory/sqitch-sqlite-intro/ --engine sqlite
+  > sqitch init flipr --uri https://github.com/sqitchers/sqitch-sqlite-intro/ --engine sqlite
   Created sqitch.conf
   Created sqitch.plan
   Created deploy/
@@ -74,7 +79,7 @@ Let's have a look at F<sqitch.conf>:
   	# client = sqlite3
 
 Good, it picked up on the fact that we're creating changes for the SQLite
-engine, thanks to the C<-engine sqlite> option, and saved it to the file.
+engine, thanks to the C<--engine sqlite> option, and saved it to the file.
 Furthermore, it wrote a commented-out C<[engine "sqlite"]> section with all
 the available SQLite engine-specific settings commented out and ready to be
 edited as appropriate.
@@ -82,7 +87,10 @@ edited as appropriate.
 By default, Sqitch will read F<sqitch.conf> in the current directory for
 settings. But it will also read F<~/.sqitch/sqitch.conf> for user-specific
 settings. Since SQLite's C<sqlite3> client is not in the path on my system,
-let's go ahead an tell it where to find the client on our computer.
+let's go ahead an tell it where to find the client on our computer (don't
+bother if you're using the
+L<Docker image|https://hub.docker.com/r/sqitch/sqitch/> because it uses the
+client inside the container, not on your host machine).
 
   > sqitch config --user engine.sqlite.client /opt/local/bin/sqlite3
 
@@ -109,7 +117,7 @@ Back to the repository. Have a look at the plan file, F<sqitch.plan>:
   > cat sqitch.plan
   %syntax-version=1.0.0
   %project=flipr
-  %uri=https://github.com/theory/sqitch-sqlite-intro/
+  %uri=https://github.com/sqitchers/sqitch-sqlite-intro/
   
 
 Note that it has picked up on the name and URI of the app we're building.
@@ -121,7 +129,7 @@ Let's commit these changes and start creating the database changes.
 
   > git add .
   > git commit -m 'Initialize Sqitch configuration.'
-  [master 91e2f0d] Initialize Sqitch configuration.
+  [main 91e2f0d] Initialize Sqitch configuration.
    2 files changed, 19 insertions(+)
    create mode 100644 sqitch.conf
    create mode 100644 sqitch.plan
@@ -178,7 +186,9 @@ script, so we edit this to F<revert/users.sql> to look like this:
 
   COMMIT;
 
-Now we can try deploying this change:
+Now we can try deploying this change. We tell Sqitch where to send the change
+via a L<database URI|https://github.com/libwww-perl/uri-db/>. Here we've
+specified a database file, F<flipr_test.db>:
 
   > sqitch deploy db:sqlite:flipr_test.db
   Adding registry tables to db:sqlite:sqitch.db
@@ -190,11 +200,23 @@ changes. The registry is separate from the database to which the C<users>
 change was deployed; by default, its name is C<sqitch.$suffix>, where
 C<$suffix> is the same as the suffix on the target database, if any. It lives
 in the same directory as the target database. This will be useful if you use
-the SQLite L<C<ATTACHDATABASE>|http://www.sqlite.org/lang_attach.html> command
-to manage multiple database files in a single project. In that case, you will
-want to use the same file for all the databases. Keep them all in the same
-directory with the same suffix and you get just that with the default sqitch
-database.
+the SQLite L<C<ATTACHDATABASE>|https://www.sqlite.org/lang_attach.html>
+command to manage multiple database files in a single project. In that case,
+you will want to use the same file for all the databases. Keep them all in the
+same directory with the same suffix and you get just that with the default
+sqitch database. In this case, we should end up with two databases:
+
+=over
+
+=item * F<sqitch.db>
+
+The Sqitch registry database.
+
+=item * F<flipr_test.b>
+
+The database Sqitch manages.
+
+=back
 
 If you'd like it to have a different name for the registry database, use
 C<sqitch engine add sqlite $name> to configure it (or via the
@@ -330,7 +352,7 @@ Cool. Let's tell Git to ignore F<*.db> files and then commit it.
   > echo '*.db' > .gitignore
   > git add .
   > git commit -m 'Add users table.'
-  [master 6725454] Add users table.
+  [main 6725454] Add users table.
    5 files changed, 31 insertions(+)
    create mode 100644 .gitignore
    create mode 100644 deploy/users.sql
@@ -365,14 +387,14 @@ When we look at the status, the deployment will be there:
 
 I'm getting a little tired of always having to type
 C<db:sqlite:flipr_test.db>, aren't you? This
-L<database connection URI|https://github.com/theory/uri-db/> tells Sqitch how
+L<database connection URI|https://github.com/libwww-perl/uri-db/> tells Sqitch how
 to connect to the deployment target, but we don't have to keep using the URI.
 We can name the target:
 
   > sqitch target add flipr_test db:sqlite:flipr_test.db
 
 The L<C<target>|sqitch-target> command, inspired by
-L<C<git-remote>|http://git-scm.com/docs/git-remote>, allows management of one
+L<C<git-remote>|https://git-scm.com/docs/git-remote>, allows management of one
 or more named deployment targets. We've just added a target named
 C<flipr_test>, which means we can use the string C<flipr_test> for the target,
 rather than the URI. But since we're doing so much testing, we can also tell
@@ -404,7 +426,7 @@ We'll see the L<C<rebase>|sqitch-rebase> command a bit later. In the meantime,
 let's commit the new configuration and and make some more changes!
 
   > git commit -am 'Set default target and always verify.'
-  [master 5fb57ec] Set default target and always verify.
+  [main 5fb57ec] Set default target and always verify.
    1 file changed, 8 insertions(+)
 
 =head1 Deploy with Dependency
@@ -461,7 +483,7 @@ column is missing. Here's the F<verify/flips.sql>:
 	FROM flips
    WHERE 0;
 
-  COMMIT;
+  ROLLBACK;
 
 Now for the revert script: all we have to do is drop the table. Add this to
 F<revert/flips.sql>:
@@ -559,7 +581,7 @@ Okay, let's commit and deploy again:
 
   > git add .
   > git commit -am 'Add flips table.'
-  [master 21cba95] Add flips table.
+  [main 21cba95] Add flips table.
    4 files changed, 30 insertions(+)
    create mode 100644 deploy/flips.sql
    create mode 100644 revert/flips.sql
@@ -629,7 +651,7 @@ Looks good! Commit it.
 
   > git add .
   > git commit -m 'Add the userflips view.'
-  [master c74bfb4] Add the userflips view.
+  [main c74bfb4] Add the userflips view.
    4 files changed, 29 insertions(+)
    create mode 100644 deploy/userflips.sql
    create mode 100644 revert/userflips.sql
@@ -644,7 +666,7 @@ release, let's tag it:
   > sqitch tag v1.0.0-dev1 -n 'Tag v1.0.0-dev1.'
   Tagged "userflips" with @v1.0.0-dev1
   > git commit -am 'Tag the database with v1.0.0-dev1.'
-  [master 7a479fd] Tag the database with v1.0.0-dev1.
+  [main 7a479fd] Tag the database with v1.0.0-dev1.
    1 file changed, 1 insertion(+)
   > git tag v1.0.0-dev1 -am 'Tag v1.0.0-dev1'
 
@@ -758,7 +780,7 @@ Look good?
   # 
   Nothing to deploy (up-to-date)
 
-Note the use of C<--show tags> to show all the deployed tags. Make sure we can
+Note the use of C<--show-tags> to show all the deployed tags. Make sure we can
 revert, too:
 
   > sqitch revert --to @HEAD^ -y 
@@ -778,14 +800,14 @@ Great! Now make it so:
    create mode 100644 revert/hashtags.sql
    create mode 100644 verify/hashtags.sql
 
-Good, we've finished this feature. Time to merge back into C<master>.
+Good, we've finished this feature. Time to merge back into C<main>.
 
 =head2 Emergency
 
 Let's do it:
 
-  > git checkout master
-  Switched to branch 'master'
+  > git checkout main
+  Switched to branch 'main'
   > git pull
   Updating 7a479fd..47a4107
   Fast-forward
@@ -798,7 +820,7 @@ Let's do it:
    create mode 100644 revert/lists.sql
    create mode 100644 verify/lists.sql
 
-Hrm, that's interesting. Looks like someone made some changes to C<master>.
+Hrm, that's interesting. Looks like someone made some changes to C<main>.
 They added list support. Well, let's see what happens when we merge our
 changes.
 
@@ -811,38 +833,38 @@ Oh, a conflict in F<sqitch.plan>. Not too surprising, since both the merged
 C<lists> branch and our C<hashtags> branch added changes to the plan. Let's
 try a different approach.
 
-The truth is, we got lazy. Those changes when we pulled master from the origin
+The truth is, we got lazy. Those changes when we pulled main from the origin
 should have raised a red flag. It's considered a bad practice not to look at
-what's changed in C<master> before merging in a branch. What one I<should> do
+what's changed in C<main> before merging in a branch. What one I<should> do
 is either:
 
 =over
 
 =item *
 
-Rebase the F<hashtags> branch from master before merging. This "rewinds" the
-branch changes, pulls from C<master>, and then replays the changes back on top
+Rebase the F<hashtags> branch from main before merging. This "rewinds" the
+branch changes, pulls from C<main>, and then replays the changes back on top
 of the pulled changes.
 
 =item *
 
-Create a patch and apply I<that> to master. This is the sort of thing you
+Create a patch and apply I<that> to main. This is the sort of thing you
 might have to do if you're sending changes to another user, especially if the
 VCS is not Git.
 
 =back
 
-So let's restore things to how they were at master:
+So let's restore things to how they were at main:
 
   > git reset --hard HEAD
   HEAD is now at 47a4107 Merge branch 'lists'
 
 That throws out our botched merge. Now let's go back to our branch and rebase
-it on C<master>:
+it on C<main>:
 
   > git checkout hashtags
   Switched to branch 'hashtags'
-  > git rebase master   
+  > git rebase main   
   First, rewinding head to replay your work on top of it...
   Applying: Add hashtags table.
   Using index info to reconstruct a base tree...
@@ -864,7 +886,7 @@ resolve conflicts in that file. Except in Git. Fortunately for us, we can tell
 Git to resolve conflicts in F<sqitch.plan> differently. Because we only ever
 append lines to the file, we can have it use the "union" merge driver, which,
 according to L<its
-docs|http://git-scm.com/docs/gitattributes#_built-in_merge_drivers>:
+docs|https://git-scm.com/docs/gitattributes#_built-in_merge_drivers>:
 
 =over
 
@@ -885,7 +907,7 @@ Now add the union merge driver to F<.gitattributes> for F<sqitch.plan>
 and rebase again:
 
   > echo sqitch.plan merge=union > .gitattributes
-  > git rebase master
+  > git rebase main
   First, rewinding head to replay your work on top of it...
   Applying: Add hashtags table.
   Using index info to reconstruct a base tree...
@@ -898,7 +920,7 @@ Ah, that looks a bit better. Let's have a look at the plan:
   > cat sqitch.plan
   %syntax-version=1.0.0
   %project=flipr
-  %uri=https://github.com/theory/sqitch-sqlite-intro/
+  %uri=https://github.com/sqitchers/sqitch-sqlite-intro/
 
   users 2013-12-31T18:06:04Z Marge N. O’Vera <marge@example.com> # Creates table to track our users.
   flips [users] 2013-12-31T19:01:40Z Marge N. O’Vera <marge@example.com> # Adds table for storing flips.
@@ -939,10 +961,10 @@ worthwhile to keep that change:
 
 =head2 Merges Mastered
 
-And now, finally, we can merge into C<master>:
+And now, finally, we can merge into C<main>:
 
-  > git checkout master
-  Switched to branch 'master'
+  > git checkout main
+  Switched to branch 'main'
   > git merge --no-ff hashtags -m "Merge branch 'hashtags'"
   Merge made by the 'recursive' strategy.
    .gitattributes      |  1 +
@@ -961,7 +983,7 @@ And double-check our work:
   > cat sqitch.plan
   %syntax-version=1.0.0
   %project=flipr
-  %uri=https://github.com/theory/sqitch-sqlite-intro/
+  %uri=https://github.com/sqitchers/sqitch-sqlite-intro/
 
   users 2013-12-31T18:06:04Z Marge N. O’Vera <marge@example.com> # Creates table to track our users.
   flips [users] 2013-12-31T19:01:40Z Marge N. O’Vera <marge@example.com> # Adds table for storing flips.
@@ -971,14 +993,14 @@ And double-check our work:
   lists [users] 2013-12-31T19:28:05Z Marge N. O’Vera <marge@example.com> # Adds table for storing lists.
   hashtags [flips] 2013-12-31T19:30:13Z Marge N. O’Vera <marge@example.com> # Adds table for storing hashtags.
 
-Much much better, a nice clean master now. And because it is now identical to
+Much much better, a nice clean main now. And because it is now identical to
 the "hashtags" branch, we can just carry on. Go ahead and tag it, bundle, and
 release:
 
   > sqitch tag v1.0.0-dev2 -n 'Tag v1.0.0-dev2.'
   Tagged "hashtags" with @v1.0.0-dev2
   > git commit -am 'Tag the database with v1.0.0-dev2.'
-  [master 7abfd9b] Tag the database with v1.0.0-dev2.
+  [main 7abfd9b] Tag the database with v1.0.0-dev2.
    1 file changed, 1 insertion(+)
   > git tag v1.0.0-dev2 -am 'Tag v1.0.0-dev2'
   > sqitch bundle --dest-dir flipr-1.0.0-dev2
@@ -1006,7 +1028,7 @@ demands. The upshot is that we need to update the C<userflips> view, which is
 used for the feature in question, to include the Twitter user names.
 
 Normally, modifying views in database changes is a
-L<PITA|http://www.urbandictionary.com/define.php?term=pita>. You have to make
+L<PITA|https://www.urbandictionary.com/define.php?term=pita>. You have to make
 changes like these:
 
 =over
@@ -1065,8 +1087,8 @@ point of fact, it has copied the files to stand in for the previous instance
 of the C<userflips> change, which we can see via C<git status>:
 
   > git status
-  # On branch master
-  # Your branch is ahead of 'origin/master' by 4 commits.
+  # On branch main
+  # Your branch is ahead of 'origin/main' by 4 commits.
   #   (use "git push" to publish your local commits)
   #
   # Changes not staged for commit:
@@ -1098,7 +1120,7 @@ F<deploy/userflips.sql> and F<revert/userflips.sql> are identical. This is on
 the assumption that the deploy script will be changed (we're reworking it,
 remember?), and that the revert script should actually change things back to
 how they were before. Of course, the original deploy script won't be
-L<idempotent|http://en.wikipedia.org/wiki/Idempotence> -- that is, able to be
+L<idempotent|https://en.wikipedia.org/wiki/Idempotence> -- that is, able to be
 applied multiple times without changing the result beyond the initial
 application. It could be if SQLite supported C<CREATE OR REPLACE VIEW>, but
 since it doesn't, we will have to edit the script to drop the view before
@@ -1133,7 +1155,7 @@ Here's the diff:
      FROM userflips
     WHERE 0;
  
-And finally, modify F<revert/userflips@v1.0.0-dev2.sql> to drop the view
+And finally, modify F<revert/userflips.sql> to drop the view
 before creating it:
 
   @@ -4,6 +4,7 @@
@@ -1183,7 +1205,7 @@ Excellent. Let's go ahead and commit these changes:
 
   > git add .
   > git commit -m 'Add the twitter column to the userflips view.'
-  [master 3eb96d9] Add the twitter column to the userflips view.
+  [main 3eb96d9] Add the twitter column to the userflips view.
    7 files changed, 40 insertions(+), 4 deletions(-)
    create mode 100644 deploy/userflips@v1.0.0-dev2.sql
    create mode 100644 revert/userflips@v1.0.0-dev2.sql
@@ -1200,7 +1222,7 @@ David E. Wheeler <david@justatheory.com>
 
 =head1 License
 
-Copyright (c) 2012-2015 iovation Inc.
+Copyright (c) 2012-2020 iovation Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

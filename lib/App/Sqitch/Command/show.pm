@@ -8,10 +8,17 @@ use Locale::TextDomain qw(App-Sqitch);
 use App::Sqitch::X qw(hurl);
 use List::Util qw(first);
 use Moo;
-use App::Sqitch::Types qw(Bool);
-extends 'App::Sqitch::Command';
+use App::Sqitch::Types qw(Bool Str);
 
-our $VERSION = '0.9995';
+extends 'App::Sqitch::Command';
+with 'App::Sqitch::Role::ContextCommand';
+
+# VERSION
+
+has target => (
+    is      => 'ro',
+    isa     => Str,
+);
 
 has exists_only => (
     is       => 'ro',
@@ -21,6 +28,7 @@ has exists_only => (
 
 sub options {
     return qw(
+        target|t=s
         exists|e!
     );
 }
@@ -32,11 +40,16 @@ sub configure {
     return $class->SUPER::configure( $config, $opt );
 }
 
-
 sub execute {
     my ( $self, $type, $key ) = @_;
     $self->usage unless $type && $key;
-    my $plan = $self->default_target->plan;
+
+    require App::Sqitch::Target;
+    my $target = $self->target ? App::Sqitch::Target->new(
+        $self->target_params,
+        name   => $self->target,
+    ) : $self->default_target;
+    my $plan = $target->plan;
 
     # Handle tags first.
     if ( $type eq 'tag' ) {
@@ -168,7 +181,7 @@ David E. Wheeler <david@justatheory.com>
 
 =head1 License
 
-Copyright (c) 2012-2015 iovation Inc.
+Copyright (c) 2012-2020 iovation Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

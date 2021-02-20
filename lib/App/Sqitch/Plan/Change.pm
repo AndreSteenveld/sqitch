@@ -10,7 +10,7 @@ use App::Sqitch::Plan::Depend;
 use Locale::TextDomain qw(App-Sqitch);
 extends 'App::Sqitch::Plan::Line';
 
-our $VERSION = '0.970';
+# VERSION
 
 has _requires => (
     is       => 'ro',
@@ -143,35 +143,6 @@ has id => (
     }
 );
 
-has old_info => (
-    is       => 'ro',
-    isa      => Str,
-    lazy     => 1,
-    default  => sub {
-        my $self = shift;
-        return join "\n", (
-            'project ' . $self->project,
-            ( $self->uri ? ( 'uri ' . $self->uri->canonical ) : () ),
-            'change '  . $self->format_name,
-            'planner ' . $self->format_planner,
-            'date '    . $self->timestamp->as_string,
-        );
-    }
-);
-
-has old_id => (
-    is       => 'ro',
-    isa      => Str,
-    lazy     => 1,
-    default  => sub {
-        my $content = encode_utf8 shift->old_info;
-        require Digest::SHA;
-        return Digest::SHA->new(1)->add(
-            'change ' . length($content) . "\0" . $content
-        )->hexdigest;
-    }
-);
-
 has timestamp => (
     is       => 'ro',
     isa      => DateTime,
@@ -275,6 +246,15 @@ sub action {
 sub format_name_with_tags {
     my $self = shift;
     return join ' ', $self->format_name, map { $_->format_name } $self->tags;
+}
+
+sub format_tag_qualified_name {
+    my $self = shift;
+    my ($tag) = $self->tags;
+    unless ($tag) {
+        ($tag) = $self->rework_tags or return $self->format_name . '@HEAD';
+    }
+    return join '', $self->format_name, $tag->format_name;
 }
 
 sub format_dependencies {
@@ -566,6 +546,15 @@ deployed.
 Returns "deploy" if the change should be deployed, or "revert" if it should be
 reverted.
 
+=head3 C<format_tag_qualified_name>
+
+  my $tag_qualified_name = $change->format_tag_qualified_name;
+
+Returns a string with the change name followed by the next tag in the plan.
+Useful for displaying unambiguous change specifications for reworked changes.
+If there is no tag appearing in the file after the change, the C<@HEAD> will
+be used.
+
 =head3 C<format_name_with_tags>
 
   my $name_with_tags = $change->format_name_with_tags;
@@ -658,7 +647,7 @@ David E. Wheeler <david@justatheory.com>
 
 =head1 License
 
-Copyright (c) 2012-2015 iovation Inc.
+Copyright (c) 2012-2020 iovation Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

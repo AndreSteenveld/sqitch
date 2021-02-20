@@ -11,9 +11,12 @@ use App::Sqitch::Types qw(Str Bool Target);
 use List::Util qw(max);
 use Try::Tiny;
 use namespace::autoclean;
-extends 'App::Sqitch::Command';
 
-our $VERSION = '0.9995';
+extends 'App::Sqitch::Command';
+with 'App::Sqitch::Role::ContextCommand';
+with 'App::Sqitch::Role::ConnectingCommand';
+
+# VERSION
 
 has target_name => (
     is  => 'ro',
@@ -95,19 +98,20 @@ sub options {
 }
 
 sub execute {
-    my ( $self, $target ) = @_;
+    my $self = shift;
+    my ($targets) = $self->parse_args(
+        target => $self->target_name,
+        args   => \@_,
+    );
 
-    # Need to set up the target before we do anything else.
-    if (my $t = $self->target_name // $target) {
-        $self->warn(__x(
-            'Both the --target option and the target argument passed; using {option}',
-            option => $self->target_name,
-        )) if $target && $self->target_name;
-        require App::Sqitch::Target;
-        $target = App::Sqitch::Target->new(sqitch => $self->sqitch, name => $t);
-    } else {
-        $target = $self->default_target;
-    }
+    # Warn on multiple targets.
+    my $target = shift @{ $targets };
+    $self->warn(__x(
+        'Too many targets specified; connecting to {target}',
+        target => $target->name,
+    )) if @{ $targets };
+
+    # Good to go.
     $self->target($target);
     my $engine = $target->engine;
 
@@ -405,7 +409,7 @@ David E. Wheeler <david@justatheory.com>
 
 =head1 License
 
-Copyright (c) 2012-2015 iovation Inc.
+Copyright (c) 2012-2020 iovation Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

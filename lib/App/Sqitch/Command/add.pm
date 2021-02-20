@@ -12,11 +12,13 @@ use Path::Class;
 use Try::Tiny;
 use File::Path qw(make_path);
 use Clone qw(clone);
+use List::Util qw(first);
 use namespace::autoclean;
 
 extends 'App::Sqitch::Command';
+with 'App::Sqitch::Role::ContextCommand';
 
-our $VERSION = '0.9995';
+# VERSION
 
 has change_name => (
     is  => 'ro',
@@ -114,14 +116,6 @@ sub _config_templates {
     my ($self, $config) = @_;
     my $tmpl = $config->get_section( section => 'add.templates' );
     $_ = _check_script $_ for values %{ $tmpl };
-
-    # Get legacy config.
-    for my $script (qw(deploy revert verify)) {
-        next if $tmpl->{$script};
-        if (my $file = $config->get( key => "add.$script\_template")) {
-            $tmpl->{$script} = _check_script $file;
-        }
-    }
     return $tmpl;
 }
 
@@ -170,21 +164,12 @@ sub options {
         without=s@
         use=s%
         open-editor|edit|e!
-
-        deploy-template=s
-        revert-template=s
-        verify-template=s
-        deploy!
-        revert!
-        verify!
     );
-    # Those last six are deprecated.
 }
 
 # Override to convert multiple vars to an array.
 sub _parse_opts {
     my ( $class, $args ) = @_;
-    return {} unless $args && @{$args};
 
     my (%opts, %vars);
     Getopt::Long::Configure(qw(bundling no_pass_through));
@@ -211,34 +196,10 @@ sub _parse_opts {
 
     # Merge with and without.
     $opts{with_scripts} = {
-        ( map {
-            if (exists $opts{$_}) {
-                App::Sqitch->warn(__x(
-                    'Option --{opt} has been deprecated; use "--{with} {val}" instead',
-                    opt  => $_,
-                    with => $opts{$_} ? 'with' : 'without',
-                    val  => $_
-                ));
-            }
-            $_ => delete $opts{$_} // 1;
-        } qw(deploy revert verify) ),
+        ( map { $_ => 1 } qw(deploy revert verify) ),
         ( map { $_ => 1 } @{ delete $opts{with}    || [] } ),
         ( map { $_ => 0 } @{ delete $opts{without} || [] } ),
     };
-
-    # Merge deprecated use options.
-    for my $script (qw(deploy revert verify)) {
-        next unless exists $opts{"$script\_template"};
-        $opts{use} ||= {};
-        $opts{use}{$script} = delete $opts{"$script\_template"};
-        App::Sqitch->warn(__x(
-            'Option --{opt} has been deprecated; use "--use {key}={val}" instead',
-            opt => "$script-template",
-            key => $script,
-            val => $opts{use}{$script},
-        ));
-    }
-
     return \%opts;
 }
 
@@ -251,7 +212,9 @@ sub configure {
         note      => $opt->{note}      || [],
     );
 
-    $params{with_scripts} = $opt->{with_scripts} if $opt->{with_scripts};
+    for my $key (qw(with_scripts change_name)) {
+        $params{$key} = $opt->{$key} if $opt->{$key};
+    }
 
     if (
         my $dir = $opt->{template_directory}
@@ -303,13 +266,26 @@ sub configure {
 
 sub execute {
     my $self = shift;
+    $self->usage unless @_ || $self->change_name;
+
     my ($name, $targets) = $self->parse_args(
         names      => [$self->change_name],
         all        => $self->all,
         args       => \@_,
-        no_default => 1,
         no_changes => 1,
     );
+
+    # Check for missing name.
+    unless (defined $name) {
+        if (my $target = first { my $n = $_->name; first { $_ eq $n } @_ } @{ $targets }) {
+            # Name conflicts with a target.
+            hurl add => __x(
+                'Name "{name}" identifies a target; use "--change {name}" to use it for the change name',
+                name => $target->name,
+            );
+        }
+        $self->usage;
+    }
 
     my $note = join "\n\n", => @{ $self->note };
     my ($first_change, %added, @files, %seen);
@@ -566,7 +542,7 @@ David E. Wheeler <david@justatheory.com>
 
 =head1 License
 
-Copyright (c) 2012-2015 iovation Inc.
+Copyright (c) 2012-2020 iovation Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

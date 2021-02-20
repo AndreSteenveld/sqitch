@@ -15,7 +15,7 @@ use namespace::autoclean;
 
 extends 'App::Sqitch::Engine';
 
-our $VERSION = '0.9995';
+# VERSION
 
 BEGIN {
     # We tell the Oracle connector which encoding to use. The last part of the
@@ -39,13 +39,16 @@ sub destination {
     $uri->password(undef) if $uri->password;
     $uri->dbname(
            $ENV{TWO_TASK}
-        || ( $^O eq 'MSWin32' ? $ENV{LOCAL} : undef )
+        || ( App::Sqitch::ISWIN ? $ENV{LOCAL} : undef )
         || $ENV{ORACLE_SID}
         || $self->username
-        || $self->sqitch->sysuser
     );
     return $uri->as_string;
 }
+
+# No username or password defaults.
+sub _def_user { }
+sub _def_pass { }
 
 has _sqlplus => (
     is         => 'ro',
@@ -109,7 +112,7 @@ has dbh => (
                     if (my $schema = $self->registry) {
                         try {
                             $dbh->do("ALTER SESSION SET CURRENT_SCHEMA = $schema");
-                            # http://www.nntp.perl.org/group/perl.dbi.dev/2013/11/msg7622.html
+                            # https://www.nntp.perl.org/group/perl.dbi.dev/2013/11/msg7622.html
                             $dbh->set_err(undef, undef) if $dbh->err;
                         };
                     }
@@ -136,9 +139,18 @@ sub _log_conflicts_param {
 }
 
 sub _ts2char_format {
-    q{to_char(%1$s AT TIME ZONE 'UTC', '"year":YYYY:"month":MM:"day":DD') || to_char(%1$s AT TIME ZONE 'UTC', ':"hour":HH24:"minute":MI:"second":SS:"time_zone":"UTC"')}
+    # q{CAST(to_char(%1$s AT TIME ZONE 'UTC', '"year":YYYY:"month":MM:"day":DD') AS VARCHAR2(100 byte)) || CAST(to_char(%1$s AT TIME ZONE 'UTC', ':"hour":HH24:"minute":MI:"second":SS:"time_zone":"UTC"')  AS VARCHAR2(168 byte))}
+    # Good grief, Oracle, WTF? https://github.com/sqitchers/sqitch/issues/316
+    join ' || ', (
+        q{to_char(%1$s AT TIME ZONE 'UTC', '"year":YYYY')},
+        q{to_char(%1$s AT TIME ZONE 'UTC', ':"month":MM')},
+        q{to_char(%1$s AT TIME ZONE 'UTC', ':"day":DD')},
+        q{to_char(%1$s AT TIME ZONE 'UTC', ':"hour":HH24')},
+        q{to_char(%1$s AT TIME ZONE 'UTC', ':"minute":MI')},
+        q{to_char(%1$s AT TIME ZONE 'UTC', ':"second":SS')},
+        q{':time_zone:UTC'},
+    );
 }
-
 sub _ts_default { 'current_timestamp' }
 
 sub _can_limit { 0 }
@@ -149,7 +161,7 @@ sub _char2ts {
 }
 
 sub _listagg_format {
-    # http://stackoverflow.com/q/16313631/79202
+    # https://stackoverflow.com/q/16313631/79202
     return q{CAST(COLLECT(CAST(%s AS VARCHAR2(512))) AS sqitch_array)};
 }
 
@@ -335,7 +347,7 @@ sub name_for_change_id {
                    ROW_NUMBER() OVER (partition by project ORDER BY committed_at) AS rnk
               FROM tags
         )
-        SELECT change || COALESCE(t.tag, '')
+        SELECT change || COALESCE(t.tag, '@HEAD')
           FROM changes c
           LEFT JOIN tag t ON c.project = t.project AND t.committed_at >= c.committed_at
          WHERE change_id = ?
@@ -417,7 +429,7 @@ sub are_deployed_changes {
         push @qs => 'change_id IN (' . join(', ' => ('?') x 250) . ')';
         $i -= 250;
     }
-    push @qs => 'change_id IN (' . join(', ' => ('?') x @_) . ')';
+    push @qs => 'change_id IN (' . join(', ' => ('?') x $i) . ')' if $i > 0;
     my $expr = join ' OR ', @qs;
     @{ $self->dbh->selectcol_arrayref(
         "SELECT change_id FROM changes WHERE $expr",
@@ -431,7 +443,7 @@ sub _registry_variable {
     my $schema = $self->registry;
     return $schema ? ("DEFINE registry=$schema") : (
         # Select the current schema into &registry.
-        # http://www.orafaq.com/node/515
+        # https://www.orafaq.com/node/515
         'COLUMN sname for a30 new_value registry',
         q{SELECT SYS_CONTEXT('USERENV', 'SESSION_SCHEMA') AS sname FROM DUAL;},
     );
@@ -576,7 +588,7 @@ sub _file_for_script {
         );
     }
 
-    if ($^O eq 'MSWin32') {
+    if (App::Sqitch::ISWIN) {
         # Copy it.
         $file->copy_to($alias) or hurl oracle => __x(
             'Cannot copy {file} to {alias}: {error}',
@@ -668,11 +680,6 @@ sub log_revert_change {
     return $self->_log_event( revert => $change, $del_tags, $req, $conf );
 }
 
-sub _ts2char($) {
-    my $col = shift;
-    return qq{to_char($col AT TIME ZONE 'UTC', 'YYYY:MM:DD:HH24:MI:SS')};
-}
-
 sub _no_table_error  {
     return $DBI::err && $DBI::err == 942; # ORA-00942: table or view does not exist
 }
@@ -741,7 +748,7 @@ sub _capture {
 
     require IPC::Run3;
     IPC::Run3::run3(
-        [$self->sqlplus], \$conn, \@out, @out,
+        [$self->sqlplus], \$conn, \@out, \@out,
         { return_if_system_error => 1 },
     );
     if (my $err = $?) {
@@ -802,7 +809,7 @@ David E. Wheeler <david@justatheory.com>
 
 =head1 License
 
-Copyright (c) 2012-2015 iovation Inc.
+Copyright (c) 2012-2020 iovation Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

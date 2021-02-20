@@ -11,7 +11,7 @@ use App::Sqitch::X qw(hurl);
 use Locale::TextDomain qw(App-Sqitch);
 use namespace::autoclean;
 
-our $VERSION = '0.9995';
+# VERSION
 
 requires 'dbh';
 requires 'sqitch';
@@ -21,6 +21,11 @@ requires '_ts2char_format';
 requires '_char2ts';
 requires '_listagg_format';
 requires '_no_table_error';
+requires '_handle_lookup_index';
+
+after use_driver => sub {
+    DBI->trace(1) if $_[0]->sqitch->verbosity > 2;
+};
 
 sub _dt($) {
     require App::Sqitch::DateTime;
@@ -119,7 +124,7 @@ sub _select_state {
     my $cdtcol = sprintf $self->_ts2char_format, 'c.committed_at';
     my $pdtcol = sprintf $self->_ts2char_format, 'c.planned_at';
     my $tagcol = sprintf $self->_listagg_format, 't.tag';
-    my $hshcol = $with_hash ? "c.script_hash\n                 , " : '';
+    my $hshcol = $with_hash ? "c.script_hash\n             , " : '';
     my $dbh    = $self->dbh;
     my $schema = $self->_schema;
     
@@ -240,7 +245,6 @@ sub search_events {
 
     # Limit with regular expressions?
     my (@wheres, @params);
-    my $op = $self->_regex_op;
     for my $spec (
         [ committer => 'e.committer_name' ],
         [ planner   => 'e.planner_name'   ],
@@ -248,8 +252,9 @@ sub search_events {
         [ project   => 'e.project'        ],
     ) {
         my $regex = delete $p{ $spec->[0] } // next;
-        push @wheres => "$spec->[1] $op ?";
-        push @params => $regex;
+        my ($op, $expr) = $self->_regex_expr($spec->[1], $regex);
+        push @wheres => $op;
+        push @params => $expr;
     }
 
     # Match events?
@@ -267,19 +272,10 @@ sub search_events {
     # Handle remaining parameters.
     my $limits = '';
     if (exists $p{limit} || exists $p{offset}) {
-        my $lim = delete $p{limit};
-        if ($lim) {
-            $limits = "\n         LIMIT ?";
-            push @params => $lim;
-        }
-        if (my $off = delete $p{offset}) {
-            if (!$lim && ($lim = $self->_limit_default)) {
-                # Some drivers require LIMIT when OFFSET is set.
-                $limits = "\n         LIMIT ?";
-                push @params => $lim;
-            }
-            $limits .= "\n         OFFSET ?";
-            push @params => $off;
+        my ($exprs, $values) = $self->_limit_offset(delete $p{limit}, delete $p{offset});
+        if (@{ $exprs}) {
+            $limits = join "\n         ", '', @{ $exprs };
+            push @params => @{ $values || [] };
         }
     }
 
@@ -307,6 +303,7 @@ sub search_events {
           FROM $schema events e$where
          ORDER BY e.committed_at $dir$limits
     });
+
     $sth->execute(@params);
     return sub {
         my $row = $sth->fetchrow_hashref or return;
@@ -314,6 +311,32 @@ sub search_events {
         $row->{planned_at}   = _dt $row->{planned_at};
         return $row;
     };
+}
+
+sub _regex_expr {
+    my ( $self, $col, $regex ) = @_;
+    my $op = $self->_regex_op;
+    return "$col $op ?", $regex;
+}
+
+sub _limit_offset {
+    my ($self, $lim, $off)  = @_;
+    my (@limits, @params);
+
+    if ($lim) {
+        push @limits => 'LIMIT ?';
+        push @params => $lim;
+    }
+    if ($off) {
+        if (!$lim && ($lim = $self->_limit_default)) {
+            # Some drivers require LIMIT when OFFSET is set.
+            push @limits => 'LIMIT ?';
+            push @params => $lim;
+        }
+        push @limits => 'OFFSET ?';
+        push @params => $off;
+    }
+    return \@limits, \@params;
 }
 
 sub registered_projects {
@@ -339,7 +362,7 @@ sub register_project {
     );
 
     if (@{ $res }) {
-        # A project with that name is already registreed. Compare URIs.
+        # A project with that name is already registered. Compare URIs.
         my $reg_uri = $res->[0];
         if ( defined $uri && !defined $reg_uri ) {
             hurl engine => __x(
@@ -364,20 +387,21 @@ sub register_project {
             # Both are undef, so cool.
         }
     } else {
-        # Does the URI already exist?
-        my $res = defined $uri ? $dbh->selectcol_arrayref(qq
-            {SELECT project FROM $schema projects WHERE uri = ?},
-            undef, $uri
-        ) : $dbh->selectcol_arrayref(qq
-            {SELECT project FROM $schema projects WHERE uri IS NULL},
-        );
+        # No project with that name exists. Check to see if the URI does.
+        if (defined $uri) {
+            # Does the URI already exist?
+            my $res = $dbh->selectcol_arrayref(
+                'SELECT project FROM projects WHERE uri = ?',
+                undef, $uri
+            );
 
-        hurl engine => __x(
-            'Cannot register "{project}" with URI {uri}: project "{reg_proj}" already using that URI',
-            project => $proj,
-            uri     => $uri,
-            reg_proj => $res->[0],
-        ) if @{ $res };
+            hurl engine => __x(
+                'Cannot register "{project}" with URI {uri}: project "{reg_proj}" already using that URI',
+                project => $proj,
+                uri     => $uri,
+                reg_proj => $res->[0],
+            ) if @{ $res };
+        }
 
         # Insert the project.
         my $ts = $self->_ts_default;
@@ -641,7 +665,7 @@ sub name_for_change_id {
              WHERE c2.committed_at >= c.committed_at
                AND c2.project = c.project
              LIMIT 1
-        ), '')
+        ), '@HEAD')
           FROM $schema changes c
          WHERE change_id = ?
     }, undef, $change_id)->[0];
@@ -662,7 +686,6 @@ sub log_new_tags {
     );
 
     my $subselect = 'SELECT ' . $self->_tag_subselect_columns . $self->_simple_from;
-
     $self->dbh->do(
         qq{
             INSERT INTO $schema tags (
@@ -763,12 +786,12 @@ sub deployed_changes {
     } @{ $self->dbh->selectall_arrayref(qq{
         SELECT c.change_id AS id, c.change AS name, c.project, c.note,
                $tscol AS "timestamp", c.planner_name, c.planner_email,
-               $tagcol AS tags
+               $tagcol AS tags, c.script_hash
           FROM $schema changes   c
           LEFT JOIN $schema tags t ON c.change_id = t.change_id
          WHERE c.project = ?
          GROUP BY c.change_id, c.change, c.project, c.note, c.planned_at,
-               c.planner_name, c.planner_email, c.committed_at
+               c.planner_name, c.planner_email, c.committed_at, c.script_hash
          ORDER BY c.committed_at ASC
     }, { Slice => {} }, $self->plan->project) };
 }
@@ -787,13 +810,13 @@ sub deployed_changes_since {
     } @{ $self->dbh->selectall_arrayref(qq{
         SELECT c.change_id AS id, c.change AS name, c.project, c.note,
                $tscol AS "timestamp", c.planner_name, c.planner_email,
-               $tagcol AS tags
+               $tagcol AS tags, c.script_hash
           FROM $schema changes   c
           LEFT JOIN $schema tags t ON c.change_id = t.change_id
          WHERE c.project = ?
            AND c.committed_at > (SELECT committed_at FROM $schema changes WHERE change_id = ?)
          GROUP BY c.change_id, c.change, c.project, c.note, c.planned_at,
-               c.planner_name, c.planner_email, c.committed_at
+               c.planner_name, c.planner_email, c.committed_at, c.script_hash
          ORDER BY c.committed_at ASC
     }, { Slice => {} }, $self->plan->project, $change->id) };
 }
@@ -806,12 +829,12 @@ sub load_change {
     my $change = $self->dbh->selectrow_hashref(qq{
         SELECT c.change_id AS id, c.change AS name, c.project, c.note,
                $tscol AS "timestamp", c.planner_name, c.planner_email,
-                $tagcol AS tags
+               $tagcol AS tags, c.script_hash
           FROM $schema changes   c
           LEFT JOIN $schema tags t ON c.change_id = t.change_id
          WHERE c.change_id = ?
          GROUP BY c.change_id, c.change, c.project, c.note, c.planned_at,
-               c.planner_name, c.planner_email
+               c.planner_name, c.planner_email, c.script_hash
     }, undef, $change_id) || return undef;
     $change->{timestamp} = _dt $change->{timestamp};
     unless (ref $change->{tags}) {
@@ -860,7 +883,7 @@ sub change_offset_from_id {
     my $change = $self->dbh->selectrow_hashref(qq{
         SELECT c.change_id AS id, c.change AS name, c.project, c.note,
                $tscol AS "timestamp", c.planner_name, c.planner_email,
-               $tagcol AS tags
+               $tagcol AS tags, c.script_hash
           FROM $schema changes   c
           LEFT JOIN $schema tags t ON c.change_id = t.change_id
          WHERE c.project = ?
@@ -868,7 +891,7 @@ sub change_offset_from_id {
                SELECT committed_at FROM $schema changes WHERE change_id = ?
          )
          GROUP BY c.change_id, c.change, c.project, c.note, c.planned_at,
-               c.planner_name, c.planner_email, c.committed_at
+               c.planner_name, c.planner_email, c.committed_at, c.script_hash
          ORDER BY c.committed_at $dir
          LIMIT 1 $offset_expr
     }, undef, $self->plan->project, $change_id) || return undef;
@@ -910,11 +933,10 @@ sub change_id_for {
     if ( my $change = $p{change} ) {
         if ( my $tag = $p{tag} ) {
             # There is nothing before the first tag.
-            return undef if $tag eq 'ROOT' || $tag eq 'FIRST';
+            return undef if $tag eq 'ROOT';
 
             # Find closest to the end for @HEAD.
-            return $self->_cid_head($project, $change)
-                if $tag eq 'HEAD' || $tag eq 'LAST';
+            return $self->_cid_head($project, $change) if $tag eq 'HEAD';
 
             # Find by change name and following tag.
             my $limit = $self->_can_limit ? "\n                 LIMIT 1" : '';
@@ -932,24 +954,25 @@ sub change_id_for {
         }
 
         # Find earliest by change name.
-        my $limit = $self->_can_limit ? "\n             LIMIT 1" : '';
-        return $dbh->selectcol_arrayref(qq{
+        my $ids = $dbh->selectcol_arrayref(qq{
             SELECT change_id
               FROM $schema changes
              WHERE project = ?
                AND changes.change  = ?
-             ORDER BY changes.committed_at ASC$limit
-        }, undef, $project, $change)->[0];
+             ORDER BY changes.committed_at ASC
+        }, undef, $project, $change);
+
+        # Return the ID.
+        return $ids->[0] if $p{first};
+        return $self->_handle_lookup_index($change, $ids);
     }
 
     if ( my $tag = $p{tag} ) {
         # Just return the latest for @HEAD.
-        return $self->_cid('DESC', 0, $project)
-            if $tag eq 'HEAD' || $tag eq 'LAST';
+        return $self->_cid('DESC', 0, $project) if $tag eq 'HEAD';
 
         # Just return the earliest for @ROOT.
-        return $self->_cid('ASC', 0, $project)
-            if $tag eq 'ROOT' || $tag eq 'FIRST';
+        return $self->_cid('ASC', 0, $project) if $tag eq 'ROOT';
 
         # Find by tag name.
         return $dbh->selectcol_arrayref(qq{
@@ -1110,6 +1133,14 @@ The MsSQL engine.
 
 The Vertica engine.
 
+=item L<App::Sqitch::Engine::exasol>
+
+The Exasol engine.
+
+=item L<App::Sqitch::Engine::snowflake>
+
+The Snowflake engine.
+
 =back
 
 =head1 Author
@@ -1118,7 +1149,7 @@ David E. Wheeler <david@justatheory.com>
 
 =head1 License
 
-Copyright (c) 2012-2015 iovation Inc.
+Copyright (c) 2012-2020 iovation Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

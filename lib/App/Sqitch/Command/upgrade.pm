@@ -12,8 +12,9 @@ use App::Sqitch::X qw(hurl);
 use List::Util qw(first);
 use namespace::autoclean;
 extends 'App::Sqitch::Command';
+with 'App::Sqitch::Role::ConnectingCommand';
 
-our $VERSION = '0.9995';
+# VERSION
 
 has target => (
     is  => 'ro',
@@ -27,30 +28,30 @@ sub options {
 }
 
 sub execute {
-    my ( $self, $target ) = @_;
+    my $self = shift;
+    my ($targets) = $self->parse_args(
+        target => $self->target,
+        args   => \@_,
+    );
 
-    # Need to set up the target before we do anything else.
-    if (my $t = $self->target // $target) {
-        $self->warn(__x(
-            'Both the --target option and the target argument passed; using {option}',
-            option => $self->target,
-        )) if $target && $self->target;
-        require App::Sqitch::Target;
-        $target = App::Sqitch::Target->new(sqitch => $self->sqitch, name => $t);
-    } else {
-        $target = $self->default_target;
-    }
+    # Warn on multiple targets.
+    my $target = shift @{ $targets };
+    $self->warn(__x(
+        'Too many targets specified; using {target}',
+        target => $target->name,
+    )) if @{ $targets };
+
     my $engine = $target->engine;
 
     if ($engine->needs_upgrade) {
-        $self->info( __x(
+        $self->info(__x(
             'Upgrading registry {registry} to version {version}',
             registry => $engine->registry_destination,
             version  => $engine->registry_release,
         ));
         $engine->upgrade_registry;
     } else {
-        $self->info( __x(
+        $self->info(__x(
             'Registry {registry} is up-to-date at version {version}',
             registry => $engine->registry_destination,
             version  => $engine->registry_release,
@@ -124,7 +125,7 @@ David E. Wheeler <david@justatheory.com>
 
 =head1 License
 
-Copyright (c) 2012-2015 iovation Inc.
+Copyright (c) 2012-2020 iovation Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

@@ -5,7 +5,7 @@ use strict;
 use warnings;
 use utf8;
 use Moo;
-use Types::Standard qw(Str);
+use Types::Standard qw(Str Bool);
 use Locale::TextDomain qw(App-Sqitch);
 use App::Sqitch::X qw(hurl);
 use List::Util qw(first);
@@ -15,7 +15,7 @@ use namespace::autoclean;
 extends 'App::Sqitch::Command';
 with 'App::Sqitch::Role::RevertDeployCommand';
 
-our $VERSION = '0.9995';
+# VERSION
 
 has onto_change => (
     is  => 'ro',
@@ -27,36 +27,27 @@ has upto_change => (
     isa => Str,
 );
 
+has modified => (
+    is      => 'ro',
+    isa     => Bool,
+    default => 0,
+);
+
 sub options {
     return qw(
         onto-change|onto=s
         upto-change|upto=s
-        onto-target=s
-        upto-target=s
+        modified|m
     );
 }
 
 sub configure {
     my ( $class, $config, $opt ) = @_;
-
-    my $p = { map { $_ => $opt->{$_} } grep { exists $opt->{$_} } qw(
+    return { map { $_ => $opt->{$_} } grep { exists $opt->{$_} } qw(
         onto_change
         upto_change
+        modified
     ) };
-
-    # Handle deprecated options.
-    for my $key (qw(onto upto)) {
-        if (my $val = $opt->{"$key\_target"}) {
-            App::Sqitch->warn(__x(
-                'Option --{old} has been deprecated; use --{new} instead',
-                old => "$key-target",
-                new => "$key-change",
-            ));
-            $p->{"$key\_change"} ||= $val;
-        }
-    }
-
-    return $p;
 }
 
 sub execute {
@@ -74,7 +65,10 @@ sub execute {
     )) if @{ $targets };
 
     # Warn on too many changes.
-    my $onto = $self->onto_change // shift @{ $changes };
+    my $engine = $target->engine;
+    my $onto = $self->modified
+        ? $engine->planned_deployed_common_ancestor_id
+        : $self->onto_change // shift @{ $changes };
     my $upto = $self->upto_change // shift @{ $changes };
     $self->warn(__x(
         'Too many changes specified; rebasing onto "{onto}" up to "{upto}"',
@@ -82,16 +76,14 @@ sub execute {
         upto => $upto,
     )) if @{ $changes };
 
-
     # Now get to work.
-    my $engine = $target->engine;
     $engine->with_verify( $self->verify );
     $engine->no_prompt( $self->no_prompt );
     $engine->prompt_accept( $self->prompt_accept );
     $engine->log_only( $self->log_only );
 
     # Revert.
-    if (my %v = %{ $self->revert_variables }) { $engine->set_variables(%v) }
+    $engine->set_variables( $self->_collect_revert_vars($target) );
     try {
         $engine->revert( $onto );
     } catch {
@@ -99,12 +91,12 @@ sub execute {
         die $_ if ! eval { $_->isa('App::Sqitch::X') }
             || $_->exitval > 1
             || $_->ident eq 'revert:confirm';
-        # Emit notice of non-fatal errors (e.g., nothign to revert).
+        # Emit notice of non-fatal errors (e.g., nothing to revert).
         $self->info($_->message)
     };
 
     # Deploy.
-    if (my %v = %{ $self->deploy_variables }) { $engine->set_variables(%v) }
+    $engine->set_variables( $self->_collect_deploy_vars($target) );
     $engine->deploy( $upto, $self->mode );
     return $self;
 }
@@ -177,7 +169,7 @@ David E. Wheeler <david@justatheory.com>
 
 =head1 License
 
-Copyright (c) 2012-2015 iovation Inc.
+Copyright (c) 2012-2020 iovation Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

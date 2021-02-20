@@ -10,13 +10,26 @@ use Locale::TextDomain qw(App-Sqitch);
 use App::Sqitch::Plan::Change;
 use Path::Class;
 use Moo;
-use App::Sqitch::Types qw(DBH URIDB ArrayRef Bool Str);
+use App::Sqitch::Types qw(DBH URIDB ArrayRef Bool Str HashRef);
 use namespace::autoclean;
 use List::MoreUtils qw(firstidx);
 
 extends 'App::Sqitch::Engine';
 
-our $VERSION = '0.9995';
+# VERSION
+
+has uri => (
+    is       => 'ro',
+    isa      => URIDB,
+    lazy     => 1,
+    default  => sub {
+        my $self = shift;
+        my $uri = $self->SUPER::uri;
+        $uri->host($ENV{MYSQL_HOST})     if !$uri->host  && $ENV{MYSQL_HOST};
+        $uri->port($ENV{MYSQL_TCP_PORT}) if !$uri->_port && $ENV{MYSQL_TCP_PORT};
+        return $uri;
+    },
+);
 
 has registry_uri => (
     is       => 'ro',
@@ -39,6 +52,18 @@ sub registry_destination {
     return $uri->as_string;
 }
 
+has _mycnf => (
+    is => 'rw',
+    isa     => HashRef,
+    default => sub {
+        eval 'require MySQL::Config; 1' or return {};
+        return scalar MySQL::Config::parse_defaults('my', [qw(client mysql)]);
+    },
+);
+
+sub _def_user { $_[0]->_mycnf->{user} || $_[0]->sqitch->sysuser }
+sub _def_pass { $ENV{MYSQL_PWD} || shift->_mycnf->{password} }
+
 has dbh => (
     is      => 'rw',
     isa     => DBH,
@@ -46,17 +71,8 @@ has dbh => (
     default => sub {
         my $self = shift;
         $self->use_driver;
-
         my $uri = $self->registry_uri;
-        my $pass = $self->password || do {
-            # Read the default MySQL configuration.
-            # http://dev.mysql.com/doc/refman/5.0/en/option-file-options.html
-            if (eval 'require MySQL::Config; 1') {
-                my %cfg = MySQL::Config::parse_defaults('my', [qw(client mysql)]);
-                $cfg{password};
-            }
-        };
-        my $dbh = DBI->connect($uri->dbi_dsn, scalar $self->username, $pass, {
+        my $dbh = DBI->connect($uri->dbi_dsn, $self->username, $self->password, {
             PrintError           => 0,
             RaiseError           => 0,
             AutoCommit           => 1,
@@ -94,7 +110,7 @@ has dbh => (
                         try {
                             $dbh->do(q{SET SESSION default_storage_engine = 'InnoDB'});
                         };
-                        # http://www.nntp.perl.org/group/perl.dbi.dev/2013/11/msg7622.html
+                        # https://www.nntp.perl.org/group/perl.dbi.dev/2013/11/msg7622.html
                         $dbh->set_err(undef, undef) if $dbh->err;
                     }
                     return;
@@ -155,16 +171,26 @@ has _mysql => (
 
         # Special-case --password, which requires = before the value. O_o
         if (my $pw = $self->password) {
-            push @ret, "--password=$pw";
+            my $cfgpwd = $self->_mycnf->{password} || '';
+            push @ret, "--password=$pw" if $pw ne $cfgpwd;
         }
 
         # Options to keep things quiet.
         push @ret => (
-            ($^O eq 'MSWin32' ? () : '--skip-pager' ),
+            (App::Sqitch::ISWIN ? () : '--skip-pager' ),
             '--silent',
             '--skip-column-names',
             '--skip-line-numbers',
         );
+
+        # Get Maria to abort properly on error.
+        my $vinfo = try { $self->sqitch->probe($self->client, '--version') } || '';
+        if ($vinfo =~ /mariadb/i) {
+            my ($version) = $vinfo =~ /Ver\s(\S+)/;
+            my ($maj, undef, $pat) = split /[.]/ => $version;
+            push @ret => '--abort-source-on-error'
+                if $maj > 5 || ($maj == 5 && $pat >= 66);
+        }
 
         # Add relevant query args.
         if (my @p = $uri->query_params) {
@@ -222,7 +248,7 @@ sub _quote_idents {
     map { $_ eq 'change' ? '"change"' : $_ } @_;
 }
 
-sub _version_query { 'SELECT ROUND(MAX(version), 1) FROM releases' }
+sub _version_query { 'SELECT CAST(ROUND(MAX(version), 1) AS CHAR) FROM releases' }
 
 sub initialized {
     my $self = shift;
@@ -304,7 +330,7 @@ sub _regex_op { 'REGEXP' }
 sub _limit_default { '18446744073709551615' }
 
 sub _listagg_format {
-    return q{group_concat(%s SEPARATOR ' ')};
+    return q{GROUP_CONCAT(%s SEPARATOR ' ')};
 }
 
 sub _prepare_to_log {
@@ -486,13 +512,24 @@ to C<mysql> client options will be passed to the client, as follows:
 
 =back
 
+=head3 C<username>
+
+=head3 C<password>
+
+Overrides the methods provided by the target so that, if the target has
+no username or password, Sqitch looks them up in the
+L<F</etc/my.cnf> and F<~/.my.cnf> files|https://dev.mysql.com/doc/refman/5.7/en/password-security-user.html>.
+These files must limit access only to the current user (C<0600>). Sqitch will
+look for a username and password under the C<[client]> and C<[mysql]>
+sections, in that order.
+
 =head1 Author
 
 David E. Wheeler <david@justatheory.com>
 
 =head1 License
 
-Copyright (c) 2012-2015 iovation Inc.
+Copyright (c) 2012-2020 iovation Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
